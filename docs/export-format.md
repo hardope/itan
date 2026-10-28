@@ -1,13 +1,14 @@
 # Metadata export format
 
-Itan metadata can leave the database in two ways:
+Itan metadata can leave the database in three ways:
 
 | Format | File | Use |
 |---|---|---|
 | **Library export** | `itan-export-<date>.json` (optionally `.json.gz`) | Back up or move a whole library to a new install or device |
-| **Sidecar** | `<video file>.meta.json`, next to the video | Metadata travels with the file when it's copied to another drive |
+| **Folder file** | `.itan.json` at a library folder's root | Edits travel with the drive and stay in sync between installs |
+| **Sidecar** (older versions) | `<video file>.meta.json`, next to the video | Read for compatibility; no longer written |
 
-Both use the same **item object**, so one parser handles both.
+All use the same **item object**, so one parser handles them all.
 
 ## Principles
 
@@ -152,7 +153,42 @@ will add the tag back.
 PIN hashes and the raw `play_events` log are **not** exported. The log is
 summarised into `state`.
 
-## Sidecar
+## Folder file
+
+`.itan.json`, a hidden file at the root of a library folder. It is a
+library export (`"format": "itan-library"`, importable by hand like any
+export) with these differences:
+
+- Only the videos in that folder that have edits (user-set fields, added tags,
+  removed tags). No watch history or profiles: a shared drive shouldn't tell
+  everyone what you watched.
+- `paths` are relative to the folder. The library name in them is ignored
+  when reading.
+- `exported_at` is the time of the newest edit, not of writing, so a library
+  with no new edits produces an identical file and it isn't rewritten.
+
+Rules:
+- Written when the library has `write_sidecars` enabled ("Keep edits in this
+  folder"), a couple of seconds after edits, and after imports and scans.
+  Written atomically (temporary file, then rename).
+- Read during each scan if its size or modification time changed since this
+  install last read or wrote it, whether or not the library writes one. It is
+  imported with the merge rules below, matching within that library only:
+  hash and size, then path inside the folder, then file name and size. So a
+  drive can move between installs where the folder has different names, and
+  edits made on each come together.
+- Adding a folder that already has a folder file turns on writing it, so it
+  stays in sync.
+- A file that can't be read (damaged, or a newer major version) is reported
+  and never overwritten.
+- When a library starts keeping a folder file, per-video sidecars in it are
+  imported first, then deleted once the folder file is written. Files ending
+  in `.meta.json` that aren't Itan sidecars are left alone.
+
+## Sidecar (read only)
+
+Earlier versions wrote one sidecar per edited video. They are still applied to
+newly scanned files, and folded into the folder file as described above.
 
 `Planet Earth II - Islands (2016).mkv.meta.json`:
 
@@ -166,9 +202,8 @@ summarised into `state`.
 ```
 
 Rules:
-- Written only when the library has `write_sidecars` enabled, and only after a
-  user edit. Pure auto-detected metadata doesn't need a sidecar.
-- During a scan, a sidecar acts like an import of that one item.
+- During a scan, a sidecar acts like an import of that one item, for files
+  seen for the first time.
 - The sidecar's `item.hash` must match the file. If it doesn't (the file was
   re-encoded), the sidecar is still applied, because it sits next to the file,
   and the hash inside it is updated.

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -83,6 +84,19 @@ func checkVersion(v string) error {
 // Import applies an export to the database. With dryRun nothing is written:
 // the whole import runs in a transaction that is rolled back.
 func Import(ctx context.Context, database *sql.DB, lib *Library, mode string, dryRun bool) (*Report, error) {
+	return importWith(ctx, database, lib, importOptions{mode: mode, dryRun: dryRun})
+}
+
+type importOptions struct {
+	mode   string
+	dryRun bool
+	// libraryID > 0 matches paths within that library only, ignoring the
+	// library names in the file (a folder file's paths are folder-relative).
+	libraryID int64
+}
+
+func importWith(ctx context.Context, database *sql.DB, lib *Library, opts importOptions) (*Report, error) {
+	mode, dryRun := opts.mode, opts.dryRun
 	if mode != ModeMerge && mode != ModeReplace {
 		return nil, fmt.Errorf("unknown import mode %q", mode)
 	}
@@ -95,6 +109,7 @@ func Import(ctx context.Context, database *sql.DB, lib *Library, mode string, dr
 	defer tx.Rollback() // no-op after Commit
 
 	im := newImporter(ctx, tx, mode, rep, lib.Tags)
+	im.libraryID = opts.libraryID
 	if err := im.ensureTagDefs(); err != nil {
 		return nil, err
 	}
@@ -245,13 +260,14 @@ func ApplySidecar(ctx context.Context, database *sql.DB, itemID int64, sidecarPa
 // ---- importer ----
 
 type importer struct {
-	ctx    context.Context
-	tx     *sql.Tx
-	mode   string
-	rep    *Report
-	defs   map[string]TagDef
-	order  []string
-	tagIDs map[string]int64
+	ctx       context.Context
+	tx        *sql.Tx
+	mode      string
+	rep       *Report
+	defs      map[string]TagDef
+	order     []string
+	tagIDs    map[string]int64
+	libraryID int64 // see importOptions
 }
 
 func newImporter(ctx context.Context, tx *sql.Tx, mode string, rep *Report, defs []TagDef) *importer {
@@ -375,7 +391,8 @@ func (im *importer) defsFor(it Item) []TagDef {
 }
 
 // match finds the local item for an exported one: by hash and size, then by
-// library name and path, then by file name and size (if unambiguous).
+// library name and path, then by file name and size (if unambiguous). With
+// a libraryID, paths and names are looked up in that library only.
 func (im *importer) match(it Item) (int64, string, error) {
 	var id int64
 	err := im.tx.QueryRowContext(im.ctx,
@@ -387,9 +404,15 @@ func (im *importer) match(it Item) (int64, string, error) {
 		return 0, "", err
 	}
 	for _, p := range it.Paths {
-		err := im.tx.QueryRowContext(im.ctx, `
-			SELECT f.item_id FROM files f JOIN libraries l ON l.id = f.library_id
-			 WHERE l.name = ? AND f.rel_path = ? LIMIT 1`, p.Library, p.Path).Scan(&id)
+		var err error
+		if im.libraryID > 0 {
+			err = im.tx.QueryRowContext(im.ctx, `SELECT item_id FROM files WHERE library_id = ? AND rel_path = ? LIMIT 1`,
+				im.libraryID, filepath.FromSlash(p.Path)).Scan(&id)
+		} else {
+			err = im.tx.QueryRowContext(im.ctx, `
+				SELECT f.item_id FROM files f JOIN libraries l ON l.id = f.library_id
+				 WHERE l.name = ? AND f.rel_path = ? LIMIT 1`, p.Library, p.Path).Scan(&id)
+		}
 		if err == nil {
 			return id, "path", nil
 		}
@@ -400,10 +423,14 @@ func (im *importer) match(it Item) (int64, string, error) {
 	for _, p := range it.Paths {
 		name := path.Base(p.Path)
 		var ids []int64
+		scope, args := "", []any{it.Size, name, "%/" + escapeLike(name)}
+		if im.libraryID > 0 {
+			scope, args = " AND library_id = ?", append(args, im.libraryID)
+		}
 		err := eachRow(im.ctx, im.tx, `
 			SELECT DISTINCT item_id FROM files
-			 WHERE size_bytes = ? AND (rel_path = ? OR rel_path LIKE ? ESCAPE '\')`,
-			[]any{it.Size, name, "%/" + escapeLike(name)}, func(r *sql.Rows) error {
+			 WHERE size_bytes = ? AND (rel_path = ? OR rel_path LIKE ? ESCAPE '\')`+scope,
+			args, func(r *sql.Rows) error {
 				var id int64
 				if err := r.Scan(&id); err != nil {
 					return err

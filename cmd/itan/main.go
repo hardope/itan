@@ -51,9 +51,11 @@ func run() error {
 	sc := scanner.New(database, cfg.FFprobe)
 	go scanLoop(ctx, sc, cfg.ScanInterval)
 
+	app := server.New(database, cfg, sc)
+	defer app.Close() // after the server stops: write pending folder files
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           server.New(database, cfg, sc).Handler(),
+		Handler:           app.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: video responses stream for as long as playback lasts.
 	}
@@ -122,11 +124,8 @@ func logAddresses(addr string) {
 		return
 	}
 	log.Printf("itan: open http://localhost:%s", port)
-	addrs, _ := net.InterfaceAddrs()
-	for _, a := range addrs {
-		if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && !ipn.IP.IsLoopback() {
-			log.Printf("itan: on your network: http://%s:%s", ipn.IP, port)
-		}
+	for _, u := range server.LANURLs(addr) {
+		log.Printf("itan: on your network: %s", u)
 	}
 }
 

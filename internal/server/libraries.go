@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/hardope/itan/internal/metadata"
 	"github.com/hardope/itan/internal/scanner"
@@ -52,8 +54,9 @@ func (s *Server) listLibraries(w http.ResponseWriter, r *http.Request) {
 //
 //	{"write_sidecars": true, "folder_tags": false, "default_kind": "documentary"}
 //
-// Turning write_sidecars on writes a sidecar for every item a user has
-// edited, so existing edits are covered too.
+// write_sidecars keeps a folder file (.itan.json, see metadata) with the
+// library's edits. Turning it on writes the file right away, folding in any
+// per-video sidecars; if the folder can't be written it's turned back off.
 func (s *Server) updateLibrary(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -96,47 +99,23 @@ func (s *Server) updateLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if body.WriteSidecars != nil && *body.WriteSidecars {
-		if failed, err := s.writeEditedSidecars(r, id); err != nil {
-			serverError(w, r, err)
+		res, err := metadata.SyncFolderFile(ctx, s.db, id)
+		if err != nil {
+			log.Printf("library %d: %v", id, err)
+			s.db.ExecContext(ctx, `UPDATE libraries SET write_sidecars = 0 WHERE id = ?`, id)
+			msg := fmt.Sprintf("Couldn't save edits in this folder: %v", err)
+			if errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EROFS) {
+				msg = "This folder is read-only (for example a :ro Docker mount), so edits can't be saved in it."
+			}
+			writeError(w, http.StatusConflict, msg)
 			return
-		} else if failed > 0 {
-			writeError(w, http.StatusConflict, fmt.Sprintf(
-				"sidecars are on, but %d couldn't be written. Is the folder read-only (for example a :ro Docker mount)?", failed))
-			return
+		}
+		if res.Migrated > 0 {
+			log.Printf("library %d: moved %d .meta.json files into %s", id, res.Migrated, metadata.FolderFileName)
 		}
 	}
 	s.recs.invalidate() // folder_tags or default_kind may change what scans add
 	s.listLibraries(w, r)
-}
-
-// writeEditedSidecars writes sidecars for every user-edited item with a file
-// in the library. Returns how many items failed.
-func (s *Server) writeEditedSidecars(r *http.Request, libraryID int64) (int, error) {
-	var ids []int64
-	err := eachRow(r.Context(), s.db, `
-		SELECT DISTINCT f.item_id FROM files f
-		 WHERE f.library_id = ? AND f.missing_since IS NULL
-		   AND (EXISTS (SELECT 1 FROM item_field_sources s WHERE s.item_id = f.item_id AND s.source = 'user')
-		     OR EXISTS (SELECT 1 FROM item_tags t WHERE t.item_id = f.item_id AND (t.source = 'user' OR t.removed = 1)))`,
-		[]any{libraryID}, func(rows *sql.Rows) error {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				return err
-			}
-			ids = append(ids, id)
-			return nil
-		})
-	if err != nil {
-		return 0, err
-	}
-	failed := 0
-	for _, id := range ids {
-		if err := metadata.WriteSidecars(r.Context(), s.db, id); err != nil {
-			log.Printf("item %d: %v", id, err)
-			failed++
-		}
-	}
-	return failed, nil
 }
 
 // addLibrary registers a folder and starts a scan. Body:
@@ -168,9 +147,12 @@ func (s *Server) addLibrary(w http.ResponseWriter, r *http.Request) {
 	if body.DefaultKind == "" {
 		body.DefaultKind = "video"
 	}
+	// A folder that already has a folder file (the drive was used with
+	// another install) keeps it up to date here too.
+	_, statErr := os.Stat(filepath.Join(body.Path, metadata.FolderFileName))
 	_, err := s.db.ExecContext(r.Context(),
-		`INSERT INTO libraries(name, root_path, default_kind) VALUES (?, ?, ?)`,
-		strings.TrimSpace(body.Name), body.Path, body.DefaultKind)
+		`INSERT INTO libraries(name, root_path, default_kind, write_sidecars) VALUES (?, ?, ?, ?)`,
+		strings.TrimSpace(body.Name), body.Path, body.DefaultKind, statErr == nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			writeError(w, http.StatusConflict, "that folder is already a library")

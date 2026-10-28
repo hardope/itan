@@ -58,6 +58,30 @@ folders from the ⚙ page in the web UI.
 | `-hwaccel` | `ITAN_HWACCEL` | `auto` | Transcoding encoder: `auto`, `none` (software), `videotoolbox`, `vaapi`, `nvenc` |
 | `-max-transcodes` | `ITAN_MAX_TRANSCODES` | `2` | Simultaneous transcodes, `0` to disable transcoding |
 
+## Watching
+
+Press play on any video. Nothing is converted until you do, so browsing
+never ties up the server. The player remembers where you stopped, works the
+same for every file type, and offers what to watch next when a video ends.
+Editing details, tags, your rating or favorites happens in place, without
+interrupting playback.
+
+On a computer the player starts medium-sized, with "More like this" beside
+it. The wide button (or T) makes it span the page; each browser remembers
+which you prefer. Phones always get the full width. On touch screens, double
+tap the left or right of the video to skip 10 seconds.
+
+| Key | |
+|---|---|
+| Space or K | Play / pause |
+| ← → | Back / forward 5 seconds |
+| J L | Back / forward 10 seconds |
+| 0–9 | Jump to 0%–90% |
+| F | Full screen |
+| T | Wide / default view |
+| M | Mute |
+| / | Search |
+
 ## How it works
 
 1. **Scan**: walks each library and skips files whose size and modification
@@ -153,28 +177,33 @@ ways. Both are described in [docs/export-format.md](docs/export-format.md).
   Videos that aren't on the receiving server yet are kept as *pending* and
   applied automatically when a scan finds them, so you can import before the
   drive is plugged in.
-- **Sidecar files**: turn on *Save edits as .meta.json next to videos* for a
-  library, and every video you edit gets a small `<video>.meta.json` file
-  beside it. Copy the video with its sidecar to another drive or server and
-  the edits come along, even if the video was re-encoded. This needs write
-  access to the folder, so it won't work with a read-only (`:ro`) Docker
-  mount.
+- **A file in the folder**: turn on *Keep edits in this folder* for a
+  library, and your edits are saved in one hidden file, `.itan.json`, at
+  the folder's root. Plug the drive into another computer running Itan
+  and add the folder: the edits come along, even if the folder has another
+  name there or some videos were renamed or re-encoded. Edits made on either
+  computer are merged the next time the other one scans. Watch history isn't
+  included. This needs write access to the folder, so it won't work with a
+  read-only (`:ro`) Docker mount. Older versions wrote one `.meta.json` per
+  video; those are folded into `.itan.json` and removed when you turn the
+  option on.
 
 ## API
 
 | | |
 |---|---|
-| `GET /api/items?q=&tag=&exclude=&kind=&quality=&sort=` | List and search. `tag`/`exclude` are repeatable refs like `genre:music` |
+| `GET /api/items?q=&tag=&exclude=&kind=&quality=&sort=&limit=&offset=` | List and search. `tag`/`exclude` are repeatable refs like `genre:music`. `X-Total-Count` has the number of matches |
 | `GET /api/items?shelf=continue` | Partially watched |
 | `GET /api/items/{id}` | Details, tags, tracks, files, field sources |
 | `PATCH /api/items/{id}` | Edit fields, `add_tags`, `remove_tags` |
 | `POST /api/items/{id}/progress` | Save resume position |
 | `PUT /api/items/{id}/favorite` | `{"favorite": true}` |
+| `GET /api/info` | Addresses other devices on the network can use |
 | `GET /api/recommendations?limit=` | Home page rows: `{"shelves": [{id, title, items}]}`, each item with a `reason` |
 | `GET /api/items/{id}/similar?limit=` | More like this |
 | `GET /api/items/{id}/thumbnail` | JPEG, generated on first request |
 | `GET /api/tags` | Tags with item counts |
-| `GET/POST /api/libraries`, `PATCH/DELETE /api/libraries/{id}` | Manage folders; PATCH sets `write_sidecars`, `folder_tags`, `default_kind` |
+| `GET/POST /api/libraries`, `PATCH/DELETE /api/libraries/{id}` | Manage folders; PATCH sets `write_sidecars` (keep `.itan.json`), `folder_tags`, `default_kind` |
 | `GET /api/export?history=1&gzip=1` | Download all metadata |
 | `POST /api/import?mode=merge\|replace&dry_run=1` | Import an export file (request body, plain or gzipped) → report |
 | `GET/POST /api/scan` | Scan status / start a scan |
@@ -190,7 +219,7 @@ cmd/itan/          entry point
 internal/config/       flags and env vars
 internal/db/           schema.sql, migrations, tag helpers, search index
 internal/scanner/      walk, ph1 hash, filename parsing, ffprobe
-internal/metadata/     export, import, sidecars, pending imports
+internal/metadata/     export, import, folder files, pending imports
 internal/recommend/    recommendations: feature vectors, taste, diversity
 internal/server/       HTTP API, streaming, thumbnails
 internal/server/web/   web UI (plain HTML/CSS/JS, embedded in the binary)
@@ -201,6 +230,5 @@ docs/                  metadata export format spec
 
 - HDR → SDR tone mapping when transcoding (HDR currently looks washed out)
 - External subtitles (SRT → WebVTT)
-- Re-read sidecars that changed after a file was first scanned
 - "Not interested" on recommendations; "Up next" for series episodes
 - mDNS (`itan.local`), installable PWA, multiple profiles

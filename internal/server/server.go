@@ -6,8 +6,10 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,11 +32,16 @@ type Server struct {
 	thumbs  *thumbnailer
 	hls     *hlsManager
 	recs    recCache
+	folders *folderWriter
 }
 
 func New(database *sql.DB, cfg *config.Config, sc *scanner.Scanner) *Server {
-	return &Server{db: database, cfg: cfg, scanner: sc, thumbs: newThumbnailer(cfg), hls: newHLSManager(cfg)}
+	return &Server{db: database, cfg: cfg, scanner: sc, thumbs: newThumbnailer(cfg), hls: newHLSManager(cfg),
+		folders: newFolderWriter(database)}
 }
+
+// Close finishes background work that shouldn't be lost on shutdown.
+func (s *Server) Close() { s.folders.Close() }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -47,6 +54,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/items/{id}/similar", s.similarItems)
 	mux.HandleFunc("PUT /api/items/{id}/favorite", s.setFavorite)
 	mux.HandleFunc("GET /api/recommendations", s.recommendations)
+	mux.HandleFunc("GET /api/info", s.info)
 	mux.HandleFunc("GET /api/tags", s.listTags)
 	mux.HandleFunc("GET /api/libraries", s.listLibraries)
 	mux.HandleFunc("POST /api/libraries", s.addLibrary)
@@ -75,6 +83,31 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	return logRequests(mux)
+}
+
+// LANURLs lists the URLs other devices on the local network can use.
+func LANURLs(addr string) []string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil
+	}
+	var urls []string
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && !ipn.IP.IsLoopback() {
+			urls = append(urls, fmt.Sprintf("http://%s:%s", ipn.IP, port))
+		}
+	}
+	return urls
+}
+
+// info tells the UI how other devices can reach this server.
+func (s *Server) info(w http.ResponseWriter, r *http.Request) {
+	urls := LANURLs(s.cfg.Addr)
+	if urls == nil {
+		urls = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lan_urls": urls})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

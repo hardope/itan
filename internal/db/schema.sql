@@ -25,7 +25,8 @@ CREATE TABLE libraries (
     default_kind    TEXT    NOT NULL DEFAULT 'video',
     -- Turn folder names into tags: /Docs/Nature/x.mkv -> tags "docs", "nature"
     folder_tags     INTEGER NOT NULL DEFAULT 1,
-    -- Write <file>.meta.json sidecars next to media files (needs write access)
+    -- Keep the library's edits in <root>/.itan.json (needs write access).
+    -- The name is from when this wrote one .meta.json sidecar per video.
     write_sidecars  INTEGER NOT NULL DEFAULT 0,
     enabled         INTEGER NOT NULL DEFAULT 1,
     last_scan_at    INTEGER,                      -- unix seconds

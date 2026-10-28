@@ -73,17 +73,9 @@ func (s *Server) importLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !rep.DryRun {
+		s.folders.allChanged()
 		log.Printf("import (%s): %d items, %d matched, %d pending, %d fields updated",
 			mode, rep.Items, rep.Matched["hash"]+rep.Matched["path"]+rep.Matched["name"], rep.Pending, rep.FieldsUpdated)
 	}
 	writeJSON(w, http.StatusOK, rep)
-}
-
-// writeSidecars refreshes an item's .meta.json files after a user edit.
-// Failures (for example a read-only mount) are logged, not returned: the
-// edit itself is saved in the database either way.
-func (s *Server) writeSidecars(r *http.Request, itemID int64) {
-	if err := metadata.WriteSidecars(r.Context(), s.db, itemID); err != nil {
-		log.Printf("item %d: %v", itemID, err)
-	}
 }

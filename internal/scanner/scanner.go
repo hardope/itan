@@ -176,6 +176,19 @@ func (s *Scanner) scanLibrary(ctx context.Context, lib library) error {
 	}
 	n, _ := res.RowsAffected()
 	s.update(func(st *Status) { st.Missing += int(n) })
+
+	// Read the folder's .itan.json if it changed (edits from another
+	// machine), and keep it up to date if the library keeps one.
+	if fr, err := metadata.SyncFolderFile(ctx, s.db, lib.id); err != nil {
+		s.addError("%v", err)
+	} else {
+		if fr.Read && fr.Changes > 0 {
+			log.Printf("scan: %s: applied %d changes from %s", lib.name, fr.Changes, metadata.FolderFileName)
+		}
+		if fr.Migrated > 0 {
+			log.Printf("scan: %s: moved %d .meta.json files into %s", lib.name, fr.Migrated, metadata.FolderFileName)
+		}
+	}
 	_, err = s.db.ExecContext(ctx, `UPDATE libraries SET last_scan_at = ? WHERE id = ?`, time.Now().Unix(), lib.id)
 	return err
 }

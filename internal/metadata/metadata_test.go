@@ -328,10 +328,8 @@ func TestSidecarRoundTrip(t *testing.T) {
 	exec(t, src, `UPDATE tags SET color = '#ff0000' WHERE slug = 'home-video'`)
 	addTag(t, src, a, "genre:home-video", "user", false)
 
-	if err := WriteSidecars(ctx, src, a); err != nil {
-		t.Fatal(err)
-	}
 	sidecar := filepath.Join(root, "clip.mp4"+SidecarExt)
+	writeSidecar(t, src, a, sidecar)
 	data, err := os.ReadFile(sidecar)
 	if err != nil {
 		t.Fatal(err)
@@ -357,6 +355,19 @@ func TestSidecarRoundTrip(t *testing.T) {
 	}
 	if ok, _ := ApplySidecar(ctx, dst, b, filepath.Join(root, "none.meta.json")); ok {
 		t.Error("missing sidecar reported as applied")
+	}
+}
+
+// writeSidecar writes a per-video sidecar as earlier versions did.
+func writeSidecar(t *testing.T, d *sql.DB, itemID int64, path string) {
+	t.Helper()
+	sc, err := BuildSidecar(ctx, d, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.MarshalIndent(sc, "", "  ")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -52,6 +52,8 @@ var sortOrders = map[string]string{
 //	kind=, quality=
 //	shelf=continue   partially watched, most recent first
 //	sort=title|added|year|rating|played, limit=, offset=
+//
+// The X-Total-Count header has the number of matches without limit/offset.
 func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	where := []string{"EXISTS (SELECT 1 FROM files f WHERE f.item_id = i.id AND f.missing_since IS NULL)"}
@@ -98,6 +100,14 @@ func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
+	var total int
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM items i
+		LEFT JOIN play_state ps ON ps.item_id = i.id AND ps.profile_id = ? WHERE `+strings.Join(where, " AND "),
+		args...).Scan(&total); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	w.Header().Set("X-Total-Count", strconv.Itoa(total))
 	writeJSON(w, http.StatusOK, items)
 }
 
@@ -415,7 +425,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recs.invalidate()
-	s.writeSidecars(r, id)
+	s.folders.itemChanged(id)
 	s.getItem(w, r)
 }
 

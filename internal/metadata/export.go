@@ -4,10 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -50,7 +47,7 @@ func Export(ctx context.Context, database *sql.DB, includeHistory bool, generato
 	if lib.Tags, err = loadTagDefs(ctx, tx, nil); err != nil {
 		return nil, err
 	}
-	if lib.Items, err = loadItems(ctx, tx, 0); err != nil {
+	if lib.Items, _, err = loadItems(ctx, tx, nil); err != nil {
 		return nil, err
 	}
 	if lib.Collections, err = loadCollections(ctx, tx); err != nil {
@@ -64,11 +61,12 @@ func Export(ctx context.Context, database *sql.DB, includeHistory bool, generato
 	return lib, nil
 }
 
-// loadItems builds item objects for one item (itemID > 0) or all of them.
-func loadItems(ctx context.Context, q db.Execer, itemID int64) ([]Item, error) {
-	where, args := "", []any{}
-	if itemID > 0 {
-		where, args = "WHERE i.id = ?", []any{itemID}
+// loadItems builds item objects for the given items, or all of them if ids
+// is nil. It also returns each item's local id, in the same order.
+func loadItems(ctx context.Context, q db.Execer, ids []int64) ([]Item, []int64, error) {
+	where, itemFilter := "", ""
+	if ids != nil {
+		where, itemFilter = "WHERE i.id IN ("+idList(ids)+")", " WHERE item_id IN ("+idList(ids)+")"
 	}
 
 	byID := map[int64]*Item{}
@@ -76,9 +74,9 @@ func loadItems(ctx context.Context, q db.Execer, itemID int64) ([]Item, error) {
 	rows, err := q.QueryContext(ctx, `
 		SELECT i.id, i.content_hash, i.size_bytes, `+strings.Join(prefixed("i.", exportFields), ", ")+`,
 		       i.external_ids, i.added_at, i.updated_at, i.duration_ms, i.width, i.height, i.video_codec
-		  FROM items i `+where+` ORDER BY i.id`, args...)
+		  FROM items i `+where+` ORDER BY i.id`)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for rows.Next() {
 		var id, added, updated int64
@@ -93,7 +91,7 @@ func loadItems(ctx context.Context, q db.Execer, itemID int64) ([]Item, error) {
 		dest = append(dest, &extIDs, &added, &updated, &tech.DurationMS, &tech.Width, &tech.Height, &tech.VideoCodec)
 		if err := rows.Scan(dest...); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		it.Fields = map[string]Field{}
 		for i, name := range exportFields {
@@ -114,14 +112,10 @@ func loadItems(ctx context.Context, q db.Execer, itemID int64) ([]Item, error) {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	itemFilter := ""
-	if itemID > 0 {
-		itemFilter = " WHERE item_id = ?"
-	}
-	err = eachRow(ctx, q, `SELECT item_id, field, source FROM item_field_sources`+itemFilter, args, func(r *sql.Rows) error {
+	err = eachRow(ctx, q, `SELECT item_id, field, source FROM item_field_sources`+itemFilter, nil, func(r *sql.Rows) error {
 		var id int64
 		var field, source string
 		if err := r.Scan(&id, &field, &source); err != nil {
@@ -136,13 +130,13 @@ func loadItems(ctx context.Context, q db.Execer, itemID int64) ([]Item, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	err = eachRow(ctx, q, `
 		SELECT it.item_id, t.namespace || ':' || t.slug, it.source, it.removed
 		  FROM item_tags it JOIN tags t ON t.id = it.tag_id`+strings.Replace(itemFilter, "item_id", "it.item_id", 1)+`
-		 ORDER BY t.namespace, t.slug`, args, func(r *sql.Rows) error {
+		 ORDER BY t.namespace, t.slug`, nil, func(r *sql.Rows) error {
 		var id int64
 		var t ItemTag
 		if err := r.Scan(&id, &t.Ref, &t.Source, &t.Removed); err != nil {
@@ -154,13 +148,13 @@ func loadItems(ctx context.Context, q db.Execer, itemID int64) ([]Item, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	err = eachRow(ctx, q, `
 		SELECT f.item_id, l.name, f.rel_path FROM files f JOIN libraries l ON l.id = f.library_id`+
 		strings.Replace(itemFilter, "item_id", "f.item_id", 1)+`
-		 ORDER BY f.missing_since IS NOT NULL, f.last_seen_at DESC`, args, func(r *sql.Rows) error {
+		 ORDER BY f.missing_since IS NOT NULL, f.last_seen_at DESC`, nil, func(r *sql.Rows) error {
 		var id int64
 		var p PathHint
 		if err := r.Scan(&id, &p.Library, &p.Path); err != nil {
@@ -172,14 +166,14 @@ func loadItems(ctx context.Context, q db.Execer, itemID int64) ([]Item, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	items := make([]Item, 0, len(order))
 	for _, id := range order {
 		items = append(items, *byID[id])
 	}
-	return items, nil
+	return items, order, nil
 }
 
 // loadTagDefs returns tag definitions: all of them, or (refs != nil) those
@@ -301,9 +295,10 @@ func loadProfiles(ctx context.Context, q db.Execer) ([]Profile, error) {
 	return out, err
 }
 
-// BuildSidecar returns the sidecar object for one item.
+// BuildSidecar returns the per-video sidecar object for one item. Sidecars
+// are no longer written (see FolderFileName); this remains for tests and tools.
 func BuildSidecar(ctx context.Context, q db.Execer, itemID int64) (*Sidecar, error) {
-	items, err := loadItems(ctx, q, itemID)
+	items, _, err := loadItems(ctx, q, []int64{itemID})
 	if err != nil {
 		return nil, err
 	}
@@ -321,43 +316,6 @@ func BuildSidecar(ctx context.Context, q db.Execer, itemID int64) (*Sidecar, err
 		return nil, err
 	}
 	return &Sidecar{Format: sidecarFormat, Version: formatVersion, Item: it, TagDefs: defs}, nil
-}
-
-// WriteSidecars writes <video>.meta.json next to each present file of the
-// item, in libraries with write_sidecars enabled. Libraries mounted
-// read-only make this fail; the error says which file.
-func WriteSidecars(ctx context.Context, database *sql.DB, itemID int64) error {
-	var paths []string
-	err := eachRow(ctx, database, `
-		SELECT l.root_path, f.rel_path FROM files f JOIN libraries l ON l.id = f.library_id
-		 WHERE f.item_id = ? AND f.missing_since IS NULL AND l.write_sidecars = 1`,
-		[]any{itemID}, func(r *sql.Rows) error {
-			var root, rel string
-			if err := r.Scan(&root, &rel); err != nil {
-				return err
-			}
-			paths = append(paths, filepath.Join(root, rel)+SidecarExt)
-			return nil
-		})
-	if err != nil || len(paths) == 0 {
-		return err
-	}
-	sc, err := BuildSidecar(ctx, database, itemID)
-	if err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(sc, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	var errs []error
-	for _, p := range paths {
-		if err := writeFileAtomic(p, data); err != nil {
-			errs = append(errs, fmt.Errorf("write sidecar %s: %w", p, err))
-		}
-	}
-	return errors.Join(errs...)
 }
 
 func writeFileAtomic(path string, data []byte) error {

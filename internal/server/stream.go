@@ -94,7 +94,7 @@ func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 }
 
 // thumbnailer extracts one frame per item with ffmpeg, on first request,
-// and caches it as <data>/thumbs/<hash>.jpg.
+// and caches it as <data>/thumbs/<hash>-w640.jpg.
 type thumbnailer struct {
 	dir    string
 	ffmpeg string
@@ -118,7 +118,7 @@ func newThumbnailer(cfg *config.Config) *thumbnailer {
 var errNoThumb = errors.New("thumbnail unavailable")
 
 func (t *thumbnailer) get(ctx context.Context, hash, src string, durationMS int64) (string, error) {
-	out := filepath.Join(t.dir, strings.ReplaceAll(hash, ":", "_")+".jpg")
+	out := filepath.Join(t.dir, strings.ReplaceAll(hash, ":", "_")+"-w640.jpg")
 	if _, err := os.Stat(out); err == nil {
 		return out, nil
 	}
@@ -178,7 +178,7 @@ func (t *thumbnailer) generate(ctx context.Context, src, out string, durationMS 
 	tmp := out + ".tmp.jpg"
 	cmd := exec.CommandContext(ctx, t.ffmpeg, "-hide_banner", "-loglevel", "error",
 		"-ss", fmt.Sprintf("%.2f", seek), "-i", src,
-		"-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4", "-y", tmp)
+		"-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "4", "-y", tmp)
 	if msg, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(msg)))
