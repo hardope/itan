@@ -8,14 +8,22 @@ const app = document.getElementById("app");
 const searchBox = document.getElementById("search");
 const toasts = document.getElementById("toasts");
 
+// api calls the server. An edit refused because this device is locked asks
+// for the PIN and, once unlocked, tries again.
 async function api(path, opts = {}) {
-  const { body, withTotal, ...rest } = opts;
+  const { body, withTotal, noUnlock, ...rest } = opts;
   const res = await fetch(path, {
     ...rest,
     headers: body ? { "Content-Type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && data.locked && !noUnlock) {
+    auth.unlocked = false;
+    drawLock();
+    if (await unlockDialog()) return api(path, opts);
+    throw new Error("Not saved: changes need the PIN.");
+  }
   if (!res.ok) throw new Error(data.error || res.statusText);
   return withTotal ? { data, total: Number(res.headers.get("X-Total-Count")) || data.length } : data;
 }
@@ -74,6 +82,10 @@ const ICONS = {
   forward: '<path d="m13 18.5 8-6.5-8-6.5zM3 18.5l8-6.5-8-6.5z" fill="currentColor" stroke="none"/>',
   wide: '<rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="m6.5 12 2.2-2.2M6.5 12l2.2 2.2M17.5 12l-2.2-2.2M17.5 12l-2.2 2.2"/>',
   narrow: '<rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M10 12 7.8 9.8M10 12l-2.2 2.2M14 12l2.2-2.2M14 12l2.2 2.2"/>',
+  lock: '<rect x="4.5" y="11" width="15" height="10" rx="2"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/>',
+  unlock: '<rect x="4.5" y="11" width="15" height="10" rx="2"/><path d="M8 11V7.5a4 4 0 0 1 7.7-1.6"/>',
+  stack: '<rect x="3" y="7.5" width="14" height="13" rx="2"/><path d="M7 4h11a3 3 0 0 1 3 3v10"/>',
+  skipNext: '<path d="M5 5.5v13l9.5-6.5z" fill="currentColor" stroke="none"/><path d="M18.5 5.5v13"/>',
   devices: '<rect x="2" y="4" width="14" height="10" rx="1.5"/><path d="M6 18h6M9 14v4"/><rect x="18" y="8" width="4" height="12" rx="1"/>',
 };
 
@@ -172,9 +184,13 @@ const CODECS = {
 const codecName = (c) => (c ? CODECS[c] || c.toUpperCase() : "");
 const channelName = (n) => ({ 1: "mono", 2: "stereo", 6: "5.1", 8: "7.1" }[n] || (n ? `${n} ch` : ""));
 const qualityLabel = (q) => (!q ? "" : /^4k$/i.test(q) ? "4K" : /^sd$/i.test(q) ? "SD" : q);
+// Genres (or plain tags if there are none), minus a folder tag that just
+// repeats the title ("Breaking Bad" on Breaking Bad).
 const genresOf = (it) => {
-  const g = it.tags.filter((t) => t.namespace === "genre");
-  return (g.length ? g : it.tags.filter((t) => t.namespace === "tag")).map((t) => t.name);
+  const name = (it.series ? it.series.title : it.title).toLowerCase();
+  const tags = it.tags.filter((t) => t.name.toLowerCase() !== name);
+  const g = tags.filter((t) => t.namespace === "genre");
+  return (g.length ? g : tags.filter((t) => t.namespace === "tag")).map((t) => t.name);
 };
 
 function toast(msg, type = "ok") {
@@ -199,11 +215,115 @@ function confirmDialog({ title, body, confirm = "OK", danger = false }) {
       h("div", { class: "dialog-actions" },
         h("button", { class: "btn btn-ghost", onclick: () => d.close("cancel") }, "Cancel"),
         h("button", { class: `btn ${danger ? "btn-danger" : "btn-primary"}`, onclick: () => d.close("ok") }, confirm)));
-    d.addEventListener("close", () => { overlayOpen = false; resolve(d.returnValue === "ok"); d.remove(); });
+    const under = overlayOpen; // a drawer may be open below
+    d.addEventListener("close", () => { overlayOpen = under; resolve(d.returnValue === "ok"); d.remove(); });
     document.body.append(d);
     overlayOpen = true;
     d.showModal();
   });
+}
+
+// ---------- edit PIN ----------
+
+// Editing can be protected by a PIN (Settings). Watching never is.
+let auth = { pin_set: false, unlocked: true };
+let onAuthChange = null; // the current page's redraw when that changes
+const lockBtn = document.getElementById("lock-btn");
+
+function drawLock() {
+  lockBtn.hidden = !auth.pin_set;
+  lockBtn.replaceChildren(icon(auth.unlocked ? "unlock" : "lock"));
+  const label = auth.unlocked ? "Changes are unlocked on this device. Click to lock." : "Changes are locked. Click to enter the PIN.";
+  lockBtn.title = label;
+  lockBtn.setAttribute("aria-label", label);
+  lockBtn.classList.toggle("unlocked", auth.unlocked);
+}
+
+async function loadAuth() {
+  try { auth = await api("/api/auth", { noUnlock: true }); } catch { /* keep the defaults */ }
+  drawLock();
+}
+
+function authChanged() {
+  drawLock();
+  if (onAuthChange) onAuthChange();
+}
+
+async function lockDevice() {
+  try {
+    auth = await api("/api/auth/lock", { method: "POST", noUnlock: true });
+    toast("Locked. Changes need the PIN again.");
+    authChanged();
+  } catch (e) { toast(e.message, "error"); }
+}
+
+lockBtn.addEventListener("click", async () => {
+  if (auth.unlocked) lockDevice();
+  else if (await unlockDialog()) authChanged();
+});
+
+// ensureUnlocked resolves true once this device may make changes, asking
+// for the PIN if needed.
+const ensureUnlocked = async () => !auth.pin_set || auth.unlocked || unlockDialog();
+
+const pinField = (attrs = {}) => h("input", {
+  class: "input pin-field", type: "password", inputmode: "numeric", autocomplete: "off", maxlength: 8, ...attrs,
+  oninput: (e) => { e.target.value = e.target.value.replace(/\D/g, "").slice(0, 8); },
+});
+
+function shake(el) {
+  el.classList.remove("shake");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("shake");
+}
+
+let unlocking = null; // one dialog, however many edits asked
+function unlockDialog() {
+  unlocking ||= new Promise((resolve) => {
+    const input = pinField({ class: "input pin-input", placeholder: "••••", "aria-label": "PIN" });
+    const error = h("p", { class: "form-error", "aria-live": "polite" });
+    const ok = h("button", { class: "btn btn-primary", type: "submit" }, icon("unlock"), "Unlock");
+    const d = h("dialog", { class: "confirm pin-dialog" },
+      h("form", { onsubmit: async (e) => {
+        e.preventDefault();
+        if (input.value.length < 4) {
+          error.textContent = "The PIN has 4 to 8 digits.";
+          shake(d);
+          return;
+        }
+        ok.classList.add("busy");
+        try {
+          auth = await api("/api/auth/unlock", { method: "POST", body: { pin: input.value }, noUnlock: true });
+          toast("Unlocked on this device");
+          d.close("ok");
+        } catch (err) {
+          error.textContent = err.message;
+          input.select();
+          shake(d);
+        } finally {
+          ok.classList.remove("busy");
+        }
+      } },
+      h("div", { class: "pin-icon" }, icon("lock")),
+      h("h2", {}, "Enter the PIN"),
+      h("p", {}, "Changes are protected. Once you enter it, this device stays unlocked until you lock it."),
+      input, error,
+      h("div", { class: "dialog-actions" },
+        h("button", { class: "btn btn-ghost", type: "button", onclick: () => d.close("cancel") }, "Cancel"), ok)));
+    input.addEventListener("input", () => { error.textContent = ""; });
+    const under = overlayOpen;
+    d.addEventListener("close", () => {
+      overlayOpen = under;
+      d.remove();
+      drawLock();
+      resolve(d.returnValue === "ok");
+    });
+    document.body.append(d);
+    overlayOpen = true;
+    d.showModal();
+    input.focus();
+  }).finally(() => { unlocking = null; });
+  return unlocking;
 }
 
 async function copyText(text) {
@@ -230,34 +350,68 @@ function section({ title, desc, action }, ...children) {
 
 // ---------- cards and shelves ----------
 
+// Series cards and episodes show under the series' name; series link to
+// their own page and use the first episode's frame as cover.
+const titleOf = (it) => (it.series ? it.series.title : it.title);
+const hrefOf = (it) => (it.type === "series" ? `#/series/${it.id}` : `#/item/${it.id}`);
+const thumbOf = (it) => `/api/items/${it.show ? it.show.cover_id : it.id}/thumbnail`;
+const epLabel = (ref) => `S${ref.season} · E${ref.episode}`;
+const isPlaceholderTitle = (it) => /^Episode \d+$/.test(it.title);
+
 // poster returns a generated title card with the thumbnail fading in over it.
 function poster(it) {
-  const fallback = h("div", { class: "poster-fallback", style: `--h:${hueFor(it.title)}` }, h("span", {}, it.title));
-  const img = h("img", { src: `/api/items/${it.id}/thumbnail`, loading: "lazy", decoding: "async", alt: "" });
+  const name = titleOf(it);
+  const fallback = h("div", { class: "poster-fallback", style: `--h:${hueFor(name)}` }, h("span", {}, name));
+  const img = h("img", { src: thumbOf(it), loading: "lazy", decoding: "async", alt: "" });
   img.addEventListener("load", () => img.classList.add("loaded"), { once: true });
   img.addEventListener("error", () => img.remove(), { once: true });
   return [fallback, img];
 }
 
+function seriesYears(it) {
+  if (!it.year) return "";
+  return it.show && it.show.year_end ? `${it.year}–${it.show.year_end}` : String(it.year);
+}
+
+function seriesCounts(it) {
+  return it.show.seasons > 1 ? plural(it.show.seasons, "season") : plural(it.show.episodes, "episode");
+}
+
 function cardMeta(it) {
+  if (it.type === "series") return [seriesYears(it), seriesCounts(it), ...genresOf(it).slice(0, 1)].filter(Boolean).join(" · ");
+  if (it.series) return [epLabel(it.series), !isPlaceholderTitle(it) && it.title].filter(Boolean).join(" · ");
   const kind = it.kind !== "video" && it.kind !== "other" && kindLabel(it.kind);
   return [it.year, kind, ...genresOf(it).slice(0, 2)].filter(Boolean).join(" · ");
 }
 
+function progressOf(it) {
+  if (it.type === "series") return it.show.watched && !it.completed ? (it.show.watched / it.show.episodes) * 100 : 0;
+  return it.position_ms > 0 && it.duration_ms ? Math.min(100, (it.position_ms / it.duration_ms) * 100) : 0;
+}
+
 function card(it, { meta, reason = true } = {}) {
-  const pct = it.position_ms > 0 && it.duration_ms ? Math.min(100, (it.position_ms / it.duration_ms) * 100) : 0;
-  return h("a", { class: "card", href: `#/item/${it.id}`, title: it.title },
+  const pct = progressOf(it);
+  const series = it.type === "series";
+  return h("a", { class: `card${series ? " card-series" : ""}`, href: hrefOf(it), title: titleOf(it) },
     h("div", { class: "thumb" },
       poster(it),
-      h("div", { class: "play-hint" }, h("span", {}, icon("play"))),
-      it.quality && h("span", { class: "badge q" }, qualityLabel(it.quality)),
+      h("div", { class: "play-hint" }, h("span", {}, icon(series ? "stack" : "play"))),
+      !series && it.quality && h("span", { class: "badge q" }, qualityLabel(it.quality)),
+      series && h("span", { class: "badge q" }, "Series"),
       it.completed && !pct && h("span", { class: "badge done", title: "Watched" }, icon("check")),
-      it.duration_ms && h("span", { class: "badge dur" }, fmtDuration(it.duration_ms)),
+      series ? h("span", { class: "badge dur" }, plural(it.show.episodes, "episode"))
+        : it.duration_ms && h("span", { class: "badge dur" }, fmtDuration(it.duration_ms)),
       pct && h("div", { class: "progress" }, h("i", { style: `width:${pct}%` }))),
     h("div", { class: "card-body" },
-      h("div", { class: "card-title" }, it.title),
-      h("div", { class: "card-meta" }, (meta ?? cardMeta(it)) || " "),
+      h("div", { class: "card-title" }, titleOf(it)),
+      h("div", { class: "card-meta" }, (meta ?? cardMeta(it)) || "\u00a0"),
       reason && it.reason && h("div", { class: "card-reason" }, it.reason)));
+}
+
+// "S1 · E3 · 12 min left" for the continue watching row.
+function continueMeta(it) {
+  const left = it.duration_ms ? `${fmtDuration(it.duration_ms - it.position_ms)} left` : "";
+  return [it.series && epLabel(it.series), left].filter(Boolean).join(" · ");
 }
 
 // shelf is a titled row of cards that scrolls sideways, with arrow buttons
@@ -296,27 +450,29 @@ function tile(t) {
 // ---------- home ----------
 
 function hero(it, { eyebrow, eyebrowIcon, resume }) {
-  const pct = resume && it.duration_ms ? Math.min(100, (it.position_ms / it.duration_ms) * 100) : 0;
-  const kind = it.kind !== "video" && it.kind !== "other" && kindLabel(it.kind);
-  const meta = [
-    it.year, kind,
+  const series = it.type === "series";
+  const pct = progressOf(it);
+  const kind = !series && !it.series && it.kind !== "video" && it.kind !== "other" && kindLabel(it.kind);
+  const meta = series ? [seriesYears(it), seriesCounts(it), ...genresOf(it).slice(0, 2)].filter(Boolean) : [
+    it.series ? epLabel(it.series) : it.year, it.series && !isPlaceholderTitle(it) && it.title, kind,
     resume && it.duration_ms ? `${fmtDuration(it.duration_ms - it.position_ms)} left` : fmtDuration(it.duration_ms),
     ...genresOf(it).slice(0, 2),
   ].filter(Boolean);
+  const playHref = series ? `#/series/${it.id}` : `#/item/${it.id}?play=1`;
   return h("section", { class: "hero" },
-    h("div", { class: "hero-bg", style: `background-image:url(/api/items/${it.id}/thumbnail)` }),
+    h("div", { class: "hero-bg", style: `background-image:url(${thumbOf(it)})` }),
     h("div", { class: "hero-inner" },
       h("div", {},
         h("div", { class: "eyebrow" }, icon(eyebrowIcon), eyebrow),
-        h("h1", {}, it.title),
+        h("h1", {}, titleOf(it)),
         h("div", { class: "hero-meta" },
           meta.map((m) => h("span", {}, m)),
-          it.quality && h("span", { class: "pill" }, qualityLabel(it.quality))),
+          !series && it.quality && h("span", { class: "pill" }, qualityLabel(it.quality))),
         it.description && h("p", { class: "hero-desc" }, it.description),
         h("div", { class: "hero-actions" },
-          h("a", { class: "btn btn-primary btn-lg", href: `#/item/${it.id}?play=1` }, icon("play"), resume ? "Resume" : "Play"),
-          h("a", { class: "btn btn-glass btn-lg", href: `#/item/${it.id}` }, icon("info"), "Details"))),
-      h("a", { class: "hero-art", href: `#/item/${it.id}?play=1`, "aria-label": `Play ${it.title}`, tabindex: "-1" },
+          h("a", { class: "btn btn-primary btn-lg", href: playHref }, icon(series ? "stack" : "play"), series ? "Episodes" : resume ? "Resume" : "Play"),
+          !series && h("a", { class: "btn btn-glass btn-lg", href: `#/item/${it.id}` }, icon("info"), "Details"))),
+      h("a", { class: "hero-art", href: playHref, "aria-label": `Play ${titleOf(it)}`, tabindex: "-1" },
         h("div", { class: "thumb" },
           poster(it),
           h("div", { class: "play-hint" }, h("span", {}, icon("play"))),
@@ -342,15 +498,14 @@ async function renderHome(ctx) {
   if (cont.length) [pick, opts] = [cont[0], { eyebrow: "Continue watching", eyebrowIcon: "clock", resume: true }];
   else if (top) [pick, opts] = [top.items[0], { eyebrow: top.items[0].reason || "Recommended for you", eyebrowIcon: "sparkle" }];
   else [pick, opts] = [recent[0], { eyebrow: "Recently added", eyebrowIcon: "sparkle" }];
-  const detail = await api(`/api/items/${pick.id}`).catch(() => null);
+  const detail = await api(pick.type === "series" ? `/api/series/${pick.id}` : `/api/items/${pick.id}`).catch(() => null);
   if (ctx.stale()) return;
 
   const genres = tags.filter((t) => t.namespace === "genre");
   const tileTags = (genres.length >= 3 ? genres : tags).slice(0, 12);
   app.replaceChildren(...h("div", {},
     hero({ ...pick, description: detail?.description }, opts),
-    cont.length && shelf("Continue watching", cont,
-      (it) => ({ meta: it.duration_ms ? `${fmtDuration(it.duration_ms - it.position_ms)} left` : "", reason: false })),
+    cont.length && shelf("Continue watching", cont, (it) => ({ meta: continueMeta(it), reason: false })),
     recs.shelves.map((s) => shelf(s.title, s.items)),
     !recs.shelves.some((s) => s.id === "new") && recent.length && shelf("Recently added", recent),
     tileTags.length > 1 && h("section", { class: "shelf" },
@@ -608,35 +763,65 @@ async function renderItem(id, params, ctx) {
   // Each part redraws on its own, so edits never touch the player.
   const head = h("div", {});
   const desc = h("div", {});
+  const episodes = h("div", {});
   const similar = h("div", {});
+  let nextEp = null;
   const update = (next, redraw = true) => {
+    const seriesChanged = JSON.stringify(next.series) !== JSON.stringify(it.series);
     it = next;
     document.title = `${it.title} · ${APP_NAME}`;
-    player.setTitle(it.title);
+    player.setTitle(it.series ? `${it.series.title} · ${it.title}` : it.title);
     if (redraw) { drawHead(); drawDesc(); tags.draw(); }
+    if (seriesChanged) loadSeriesContext();
   };
   const edit = (field) => openEditor(it, update, field);
   const tags = tagEditor(() => it, update);
 
   function drawHead() {
-    const kind = it.kind !== "video" && kindLabel(it.kind);
-    const eyebrow = [kind, it.year].filter(Boolean).join(" · ");
+    const kind = it.kind !== "video" && it.kind !== "episode" && kindLabel(it.kind);
+    const eyebrow = it.series
+      ? h("a", { class: "eyebrow eyebrow-link", href: `#/series/${it.series.id}` },
+        icon("stack"), `${it.series.title} · Season ${it.series.season} · Episode ${it.series.episode}`)
+      : [kind, it.year].filter(Boolean).join(" · ");
     head.replaceChildren(...h("div", {},
-      eyebrow && h("div", { class: "eyebrow" }, eyebrow),
+      eyebrow && (typeof eyebrow === "string" ? h("div", { class: "eyebrow" }, eyebrow) : eyebrow),
       h("div", { class: "watch-title-row" },
         h("h1", {}, it.title),
-        h("button", { class: "btn btn-ghost btn-icon", title: "Edit details", "aria-label": "Edit details", onclick: () => edit("title") }, icon("edit"))),
+        h("button", { class: "btn btn-ghost btn-icon", title: "Edit details", "aria-label": "Edit details", onclick: () => edit("title") }, icon(editIcon()))),
       h("div", { class: "watch-meta" },
+        it.series && it.year && h("span", {}, it.year),
         it.duration_ms && h("span", {}, fmtDuration(it.duration_ms)),
         it.quality && h("span", { class: "pill" }, qualityLabel(it.quality)),
         it.hdr && h("span", { class: "pill accent" }, it.hdr.toUpperCase()),
         it.language && h("span", {}, langName(it.language)),
         it.completed && h("span", { class: "pill" }, "Watched")),
       h("div", { class: "watch-actions" },
+        nextEp && h("a", { class: "btn btn-primary", href: `#/item/${nextEp.id}?play=1`, title: `${epLabel(nextEp.series)} · ${nextEp.title}` },
+          icon("skipNext"), "Next episode"),
         favoriteButton(it),
         ratingStars(it, update),
-        h("button", { class: "btn", onclick: () => edit("title") }, icon("edit"), "Edit details")),
+        h("button", { class: "btn", onclick: () => edit("title") }, icon(editIcon()), "Edit details")),
     ).childNodes);
+  }
+
+  // For an episode: the other episodes of its season beside the player, and
+  // the next one for the "Next episode" button and the end of playback.
+  async function loadSeriesContext() {
+    nextEp = null;
+    episodes.replaceChildren();
+    if (it.series) {
+      try {
+        const s = await api(`/api/series/${it.series.id}`);
+        if (ctx.stale()) return;
+        const all = s.seasons.flatMap((x) => x.episodes);
+        const i = all.findIndex((x) => x.id === it.id);
+        nextEp = i >= 0 && i + 1 < all.length ? all[i + 1] : null;
+        const season = s.seasons.find((x) => x.number === it.series.season);
+        if (season) episodes.replaceChildren(sideList(`Season ${season.number}`, season.episodes, { current: it.id, numbered: true }));
+        if (nextEp) player.setUpNext(nextEp);
+      } catch { /* the page works without it */ }
+    }
+    drawHead();
   }
 
   function drawDesc() {
@@ -651,15 +836,20 @@ async function renderItem(id, params, ctx) {
   watch.append(
     h("div", { class: "watch-player" }, player.el, warn),
     h("div", { class: "watch-main" }, head, desc, tags.el),
-    h("aside", { class: "watch-side" }, similar, detailsCard(it)));
+    h("aside", { class: "watch-side" }, episodes, similar, detailsCard(it)));
   app.replaceChildren(watch);
 
+  onAuthChange = drawHead;
+  loadSeriesContext();
   api(`/api/items/${id}/similar`).then((items) => {
     if (ctx.stale() || !items.length) return;
     similar.replaceChildren(sideList("More like this", items));
-    player.setUpNext(items.find((x) => !x.completed) || items[0]);
+    if (!it.series) player.setUpNext(items.find((x) => !x.completed) || items[0]);
   }).catch(() => {});
 }
+
+// The edit buttons show a lock while editing needs the PIN.
+const editIcon = () => (auth.pin_set && !auth.unlocked ? "lock" : "edit");
 
 function favoriteButton(it) {
   const btn = h("button", { class: "btn fav-btn" });
@@ -699,6 +889,7 @@ function ratingStars(it, onUpdate) {
   stars.forEach((b, i) => {
     b.addEventListener("mouseenter", () => paint((i + 1) * 2));
     b.addEventListener("click", async () => {
+      if (!(await ensureUnlocked())) return paint(it.rating);
       const prev = it.rating;
       const val = prev === (i + 1) * 2 ? null : (i + 1) * 2;
       it.rating = val;
@@ -743,6 +934,7 @@ function tagEditor(getIt, onUpdate) {
     }
   };
   const remove = async (t) => {
+    if (!(await ensureUnlocked())) return;
     const it = getIt();
     const before = it.tags;
     it.tags = it.tags.filter((x) => x.ref !== t.ref);
@@ -772,7 +964,12 @@ function tagEditor(getIt, onUpdate) {
         it.tags.map((t) => h("span", { class: `chip ${t.namespace}`, title: [NS_LABELS[t.namespace], SOURCE_LABELS[t.source]].filter(Boolean).join(" · ") },
           h("a", { href: libraryHash({ tag: [t.ref] }) }, t.name),
           h("button", { class: "chip-x", "aria-label": `Remove ${t.name}`, title: "Remove", onclick: () => remove(t) }, icon("x")))),
-        adding ? input : h("button", { class: "chip chip-add", onclick: () => { adding = true; draw(); input.focus(); } },
+        adding ? input : h("button", { class: "chip chip-add", onclick: async () => {
+          if (!(await ensureUnlocked())) return;
+          adding = true;
+          draw();
+          input.focus();
+        } },
           icon("plus"), it.tags.length ? "Add" : "Add genres or tags")),
       adding && h("p", { class: "hint tag-help" },
         "Press Enter to add, commas for several. Start with genre:, person: or mood: to group them, like genre:Jazz or person:Nina Simone."),
@@ -815,19 +1012,24 @@ function detailsCard(it) {
 }
 
 // sideList is a compact vertical list of videos for the side column.
-function sideList(title, items) {
+// numbered: a season's episodes ("3. Title"); current: the one playing.
+function sideList(title, items, { current, numbered } = {}) {
   return h("section", { class: "side-list" },
     h("h3", {}, title),
     items.map((it) => {
-      const pct = it.position_ms > 0 && it.duration_ms ? Math.min(100, (it.position_ms / it.duration_ms) * 100) : 0;
-      return h("a", { class: "mini", href: `#/item/${it.id}`, title: it.title },
+      const pct = progressOf(it);
+      const name = numbered ? `${it.series.episode}. ${it.title}` : titleOf(it);
+      const meta = numbered ? [fmtDuration(it.duration_ms), it.completed && "Watched"].filter(Boolean).join(" · ") : cardMeta(it);
+      return h("a", { class: `mini${it.id === current ? " current" : ""}`, href: hrefOf(it), title: name,
+        "aria-current": it.id === current ? "true" : null },
         h("div", { class: "thumb" },
           poster(it),
+          it.id === current && h("span", { class: "badge q" }, "Playing"),
           it.duration_ms && h("span", { class: "badge dur" }, fmtDuration(it.duration_ms)),
           pct && h("div", { class: "progress" }, h("i", { style: `width:${pct}%` }))),
         h("div", {},
-          h("div", { class: "mini-title" }, it.title),
-          h("div", { class: "card-meta" }, cardMeta(it) || "\u00a0")));
+          h("div", { class: "mini-title" }, name),
+          h("div", { class: "card-meta" }, meta || "\u00a0")));
     }));
 }
 
@@ -838,47 +1040,18 @@ function srcBadge(it, field) {
     SOURCE_LABELS[s] || s);
 }
 
-// openEditor shows the edit form in a side drawer over the page, so the
-// video keeps playing. onSaved gets the updated item.
-function openEditor(it, onSaved, focusField = "title") {
+// openDrawer shows a form in a side drawer over the page (the video keeps
+// playing). onSave(error) saves; it returns false to keep the drawer open,
+// or throws to show the message.
+function openDrawer({ title, body, focus, onSave }) {
   const prevFocus = document.activeElement;
-  const f = {
-    title: h("input", { class: "input", value: it.title }),
-    original_title: h("input", { class: "input", value: it.original_title ?? "", placeholder: "If it's known by another name" }),
-    year: h("input", { class: "input", type: "number", inputmode: "numeric", value: it.year ?? "", min: 1870, max: 2100 }),
-    kind: h("select", { class: "input" }, KINDS.map((k) => h("option", { value: k, selected: k === it.kind }, kindLabel(k)))),
-    rating: h("input", { class: "input", type: "number", inputmode: "numeric", value: it.rating ?? "", min: 0, max: 10, placeholder: "0–10" }),
-    language: h("input", { class: "input", value: it.language ?? "", placeholder: "en, fr, yo…" }),
-    description: h("textarea", { class: "input", value: it.description ?? "", placeholder: "What's it about?", rows: 6 }),
-  };
-  const field = (name, label) => labeled(label, f[name], srcBadge(it, name));
   const error = h("p", { class: "form-error", "aria-live": "polite" });
-
-  const diff = () => {
-    const body = {};
-    const num = (v) => (v === "" ? null : Number(v));
-    const str = (v) => v.trim() || null;
-    if (f.title.value.trim() !== it.title) body.title = f.title.value.trim();
-    if (str(f.original_title.value) !== (it.original_title ?? null)) body.original_title = f.original_title.value.trim();
-    if (num(f.year.value) !== (it.year ?? null)) body.year = num(f.year.value);
-    if (f.kind.value !== it.kind) body.kind = f.kind.value;
-    if (num(f.rating.value) !== (it.rating ?? null)) body.rating = num(f.rating.value);
-    if (str(f.language.value) !== (it.language ?? null)) body.language = f.language.value.trim();
-    if (f.description.value !== (it.description ?? "")) body.description = f.description.value;
-    return body;
-  };
-
   const saveBtn = h("button", { class: "btn btn-primary" }, icon("check"), "Save");
   const save = async () => {
-    const body = diff();
-    if (!Object.keys(body).length) return close();
-    if (body.title === "") { error.textContent = "The title can't be empty."; f.title.focus(); return; }
     saveBtn.classList.add("busy");
     error.textContent = "";
     try {
-      onSaved(await api(`/api/items/${it.id}`, { method: "PATCH", body }));
-      toast("Changes saved");
-      close();
+      if ((await onSave(error)) !== false) close();
     } catch (e) {
       error.textContent = e.message;
     } finally {
@@ -888,24 +1061,18 @@ function openEditor(it, onSaved, focusField = "title") {
   saveBtn.onclick = save;
 
   const scrim = h("div", { class: "scrim", onclick: () => close() });
-  const drawer = h("aside", { class: "drawer", role: "dialog", "aria-modal": "true", "aria-labelledby": "edit-title" },
+  const drawer = h("aside", { class: "drawer", role: "dialog", "aria-modal": "true", "aria-labelledby": "drawer-title" },
     h("div", { class: "drawer-head" },
-      h("h2", { id: "edit-title" }, "Edit details"),
+      h("h2", { id: "drawer-title" }, title),
       h("button", { class: "btn btn-ghost btn-icon", "aria-label": "Close", onclick: () => close() }, icon("x"))),
-    h("div", { class: "drawer-body" },
-      field("title", "Title"),
-      field("original_title", "Original title"),
-      h("div", { class: "field-row" }, field("year", "Year"), field("kind", "Kind")),
-      h("div", { class: "field-row" }, field("rating", "Your rating"), field("language", "Language")),
-      field("description", "Description"),
-      error,
-      h("p", { class: "hint" }, "Your edits are kept when the library is rescanned, and travel with exports.")),
+    h("div", { class: "drawer-body" }, body, error),
     h("div", { class: "drawer-foot" },
       h("span", { class: "hint" }, isMac ? "⌘ Return to save" : "Ctrl+Enter to save"),
       h("button", { class: "btn btn-ghost", onclick: () => close() }, "Cancel"),
       saveBtn));
 
   const onKey = (e) => {
+    if (e.target.closest && e.target.closest("dialog")) return; // a dialog on top has the keys
     if (e.key === "Escape") { e.preventDefault(); close(); }
     else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); save(); }
     else if (e.key === "Enter" && e.target.tagName === "INPUT" && drawer.contains(e.target)) { e.preventDefault(); save(); }
@@ -929,12 +1096,215 @@ function openEditor(it, onSaved, focusField = "title") {
   document.body.style.overflow = "hidden";
   overlayOpen = true;
   closeOverlay = close;
-  const first = f[focusField] || f.title;
-  first.focus({ preventScroll: true });
-  if (first.tagName === "INPUT") first.select();
+  if (focus) {
+    focus.focus({ preventScroll: true });
+    if (focus.tagName === "INPUT") focus.select();
+  }
   requestAnimationFrame(() => {
     scrim.classList.add("open");
     drawer.classList.add("open");
+  });
+  return { close };
+}
+
+// openEditor edits a video's details. onSaved gets the updated item.
+async function openEditor(it, onSaved, focusField = "title") {
+  if (!(await ensureUnlocked())) return;
+  const f = {
+    title: h("input", { class: "input", value: it.title }),
+    original_title: h("input", { class: "input", value: it.original_title ?? "", placeholder: "If it's known by another name" }),
+    year: h("input", { class: "input", type: "number", inputmode: "numeric", value: it.year ?? "", min: 1870, max: 2100 }),
+    kind: h("select", { class: "input" }, KINDS.map((k) => h("option", { value: k, selected: k === it.kind }, kindLabel(k)))),
+    rating: h("input", { class: "input", type: "number", inputmode: "numeric", value: it.rating ?? "", min: 0, max: 10, placeholder: "0–10" }),
+    language: h("input", { class: "input", value: it.language ?? "", placeholder: "en, fr, yo…" }),
+    description: h("textarea", { class: "input", value: it.description ?? "", placeholder: "What's it about?", rows: 6 }),
+    series: h("input", { class: "input", value: it.series?.title ?? "", list: "series-names", placeholder: "Not part of a series", autocomplete: "off" }),
+    season: h("input", { class: "input", type: "number", inputmode: "numeric", value: it.series?.season ?? "", min: 1, placeholder: "1" }),
+    episode: h("input", { class: "input", type: "number", inputmode: "numeric", value: it.series?.episode ?? "", min: 1, placeholder: "Next" }),
+  };
+  const names = h("datalist", { id: "series-names" });
+  api("/api/series").then((all) => names.replaceChildren(...all.map((x) => h("option", { value: x.title })))).catch(() => {});
+  const field = (name, label) => labeled(label, f[name], srcBadge(it, name));
+
+  const diff = () => {
+    const body = {};
+    const num = (v) => (v === "" ? null : Number(v));
+    const str = (v) => v.trim() || null;
+    if (f.title.value.trim() !== it.title) body.title = f.title.value.trim();
+    if (str(f.original_title.value) !== (it.original_title ?? null)) body.original_title = f.original_title.value.trim();
+    if (num(f.year.value) !== (it.year ?? null)) body.year = num(f.year.value);
+    if (f.kind.value !== it.kind) body.kind = f.kind.value;
+    if (num(f.rating.value) !== (it.rating ?? null)) body.rating = num(f.rating.value);
+    if (str(f.language.value) !== (it.language ?? null)) body.language = f.language.value.trim();
+    if (f.description.value !== (it.description ?? "")) body.description = f.description.value;
+    // Series: an empty name takes it out; an empty episode means "after the last".
+    const name = f.series.value.trim();
+    const season = num(f.season.value) || 1;
+    const episode = num(f.episode.value) || 0;
+    const cur = it.series;
+    if (!name) {
+      if (cur) body.series = null;
+    } else if (!cur || name !== cur.title || season !== cur.season || (episode && episode !== cur.episode)) {
+      body.series = { title: name, season, episode };
+    }
+    return body;
+  };
+
+  openDrawer({
+    title: "Edit details",
+    focus: f[focusField] || f.title,
+    body: h("div", { class: "drawer-fields" },
+      field("title", "Title"),
+      field("original_title", "Original title"),
+      h("div", { class: "field-row" }, field("year", "Year"), field("kind", "Kind")),
+      h("div", { class: "field-row" }, field("rating", "Your rating"), field("language", "Language")),
+      field("description", "Description"),
+      h("div", { class: "drawer-section" },
+        h("div", { class: "section-label" }, "Series"),
+        h("div", { class: "field-row series-row" }, field("series", "Series"), labeled("Season", f.season), labeled("Episode", f.episode)),
+        h("p", { class: "hint" }, "Group it with its other episodes. Files named like Show S01E02 are grouped automatically; leave the name empty to take it out."),
+        names),
+      h("p", { class: "hint" }, "Your edits are kept when the library is rescanned, and travel with exports.")),
+    onSave: async (error) => {
+      const body = diff();
+      if (!Object.keys(body).length) return;
+      if (body.title === "") {
+        error.textContent = "The title can't be empty.";
+        f.title.focus();
+        return false;
+      }
+      onSaved(await api(`/api/items/${it.id}`, { method: "PATCH", body }));
+      toast("Changes saved");
+    },
+  });
+}
+
+// ---------- series page ----------
+
+async function renderSeries(id, params, ctx) {
+  let s;
+  try {
+    s = await api(`/api/series/${id}`);
+  } catch (e) {
+    if (e.message !== "not found") throw e;
+    if (ctx.stale()) return;
+    app.replaceChildren(h("div", { class: "empty" }, art("stack"), h("h2", {}, "This series isn't here anymore"),
+      h("p", {}, "It may have been split into separate videos, or its episodes are no longer in the library."),
+      h("div", { class: "actions" }, h("a", { class: "btn btn-primary", href: "#/library" }, "Go to the library"))));
+    return;
+  }
+  if (ctx.stale()) return;
+  document.title = `${s.title} · ${APP_NAME}`;
+
+  const head = h("div", {});
+  const list = h("section", { class: "shelf" });
+  let season = s.next ? s.next.series.season : s.seasons[0]?.number;
+  const saved = (next) => { s = next; document.title = `${s.title} · ${APP_NAME}`; drawHead(); drawList(); };
+
+  function drawHead() {
+    const pct = progressOf(s);
+    const play = s.next && `#/item/${s.next.id}?play=1`;
+    head.replaceChildren(h("section", { class: "hero series-hero" },
+      h("div", { class: "hero-bg", style: `background-image:url(${thumbOf(s)})` }),
+      h("div", { class: "hero-inner" },
+        h("div", {},
+          h("div", { class: "eyebrow" }, icon("stack"), "Series"),
+          h("h1", {}, s.title),
+          h("div", { class: "hero-meta" },
+            [seriesYears(s), plural(s.show.seasons, "season"), plural(s.show.episodes, "episode"),
+              s.show.watched && (s.completed ? "All watched" : `${s.show.watched} watched`)].filter(Boolean).map((m) => h("span", {}, m))),
+          s.tags.some((t) => t.name.toLowerCase() !== s.title.toLowerCase()) && h("div", { class: "hero-tags" },
+            s.tags.filter((t) => t.name.toLowerCase() !== s.title.toLowerCase())
+              .map((t) => h("a", { class: "chip chip-glass", href: libraryHash({ tag: [t.ref] }) }, t.name))),
+          s.description && h("p", { class: "hero-desc" }, s.description),
+          h("div", { class: "hero-actions" },
+            play && h("a", { class: "btn btn-primary btn-lg", href: play }, icon("play"), `${s.next_verb} ${epLabel(s.next.series)}`),
+            h("button", { class: "btn btn-glass btn-lg", onclick: () => openSeriesEditor(s, saved) }, icon(editIcon()), "Edit series"))),
+        h("a", { class: "hero-art", href: play || hrefOf(s), "aria-label": `Play ${s.title}`, tabindex: "-1" },
+          h("div", { class: "thumb" },
+            poster(s),
+            h("div", { class: "play-hint" }, h("span", {}, icon("play"))),
+            pct && h("div", { class: "progress" }, h("i", { style: `width:${pct}%` })))))));
+  }
+
+  function episodeRow(ep) {
+    const pct = progressOf(ep);
+    const isNext = s.next && ep.id === s.next.id;
+    return h("a", { class: `ep-row${isNext ? " next" : ""}`, href: `#/item/${ep.id}` },
+      h("div", { class: "ep-num" }, ep.series.episode),
+      h("div", { class: "thumb" },
+        poster(ep),
+        h("div", { class: "play-hint" }, h("span", {}, icon("play"))),
+        ep.completed && !pct && h("span", { class: "badge done", title: "Watched" }, icon("check")),
+        ep.duration_ms && h("span", { class: "badge dur" }, fmtDuration(ep.duration_ms)),
+        pct && h("div", { class: "progress" }, h("i", { style: `width:${pct}%` }))),
+      h("div", { class: "ep-body" },
+        h("div", { class: "ep-title" }, isPlaceholderTitle(ep) ? `Episode ${ep.series.episode}` : ep.title),
+        h("div", { class: "card-meta" }, [
+          fmtDuration(ep.duration_ms), ep.quality && qualityLabel(ep.quality),
+          ep.completed ? "Watched" : ep.position_ms > 0 && ep.duration_ms && `${fmtDuration(ep.duration_ms - ep.position_ms)} left`,
+        ].filter(Boolean).join(" · "))),
+      isNext && h("span", { class: "pill accent ep-next" }, s.next_verb === "Resume" ? "In progress" : "Up next"));
+  }
+
+  function drawList() {
+    const cur = s.seasons.find((x) => x.number === season) || s.seasons[0];
+    if (!cur) { list.replaceChildren(); return; }
+    list.replaceChildren(...h("div", {},
+      h("div", { class: "shelf-head" }, h("h2", {}, s.seasons.length > 1 ? "Episodes" : `Season ${cur.number}`)),
+      s.seasons.length > 1 && h("div", { class: "season-tabs", role: "tablist" },
+        s.seasons.map((x) => h("button", {
+          class: `chip${x.number === cur.number ? " on" : ""}`, role: "tab", "aria-selected": String(x.number === cur.number),
+          onclick: () => { season = x.number; drawList(); },
+        }, `Season ${x.number}`, h("span", { class: "n" }, x.episodes.length)))),
+      h("div", { class: "episode-list" }, cur.episodes.map(episodeRow))).childNodes);
+  }
+
+  drawHead();
+  drawList();
+  onAuthChange = drawHead;
+  app.replaceChildren(h("div", { class: "series-page" }, head, list));
+}
+
+async function openSeriesEditor(s, onSaved) {
+  if (!(await ensureUnlocked())) return;
+  const title = h("input", { class: "input", value: s.title });
+  const description = h("textarea", { class: "input", value: s.description ?? "", placeholder: "What's it about?", rows: 6 });
+  let drawer = null;
+  const split = h("button", { class: "btn btn-danger", type: "button", onclick: async () => {
+    const ok = await confirmDialog({
+      title: `Split “${s.title}”?`,
+      body: `Its ${plural(s.show.episodes, "episode")} become separate videos again. Files and edits aren't touched, and later scans won't group them again.`,
+      confirm: "Split series", danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api(`/api/series/${s.id}`, { method: "DELETE" });
+      drawer.close();
+      toast(`“${s.title}” is now separate videos`);
+      location.hash = "#/library";
+    } catch (e) { toast(e.message, "error"); }
+  } }, icon("trash"), "Split into separate videos");
+  drawer = openDrawer({
+    title: "Edit series",
+    focus: title,
+    body: h("div", { class: "drawer-fields" },
+      labeled("Title", title),
+      labeled("Description", description),
+      h("p", { class: "hint" }, "New episodes found with the show's original name still join this series. To move one episode, edit that episode."),
+      h("div", { class: "drawer-section" }, h("div", { class: "section-label" }, "Split up"), split)),
+    onSave: async (error) => {
+      const body = {};
+      if (title.value.trim() !== s.title) body.title = title.value.trim();
+      if (description.value !== (s.description ?? "")) body.description = description.value;
+      if (!Object.keys(body).length) return;
+      if (body.title === "") {
+        error.textContent = "The title can't be empty.";
+        return false;
+      }
+      onSaved(await api(`/api/series/${s.id}`, { method: "PATCH", body }));
+      toast("Series saved");
+    },
   });
 }
 
@@ -1417,9 +1787,84 @@ async function renderSettings(ctx) {
       scanBox),
     section({ title: "Add a folder", desc: `A folder on the computer running ${APP_NAME}, not on the device you're browsing from. Subfolders are included.` },
       addFolderForm(() => route())),
+    pinSection(),
     info.lan_urls.length && devicesSection(info.lan_urls),
     backupSection()));
+  onAuthChange = () => route();
   pollScan(scanBox, scanBtn);
+}
+
+function pinSection() {
+  const err = h("p", { class: "form-error", "aria-live": "polite" });
+  const fail = (msg) => { err.textContent = msg; };
+  const check = (pin, again) => {
+    if (!/^\d{4,8}$/.test(pin.value)) { fail("Use 4 to 8 digits."); pin.focus(); return false; }
+    if (again && again.value !== pin.value) { fail("The two PINs don't match."); again.focus(); return false; }
+    return true;
+  };
+  const submit = (label, cls = "btn-primary") => h("button", { class: `btn ${cls}`, type: "submit", style: "height:42px" }, label);
+
+  if (!auth.pin_set) {
+    const pin = pinField({ placeholder: "4 to 8 digits" });
+    const again = pinField({ placeholder: "Same again" });
+    const btn = submit("Set PIN");
+    return section({ title: "Edit PIN", desc: "Anyone on your Wi‑Fi can change titles, tags, series and folders. With a PIN, everyone can still watch, but changes ask for it once per device." },
+      h("form", { onsubmit: async (e) => {
+        e.preventDefault();
+        err.textContent = "";
+        if (!check(pin, again)) return;
+        btn.classList.add("busy");
+        try {
+          auth = await api("/api/auth/pin", { method: "PUT", body: { pin: pin.value }, noUnlock: true });
+          toast("PIN set. Other devices need it to make changes.");
+          authChanged();
+        } catch (x) { fail(x.message); } finally { btn.classList.remove("busy"); }
+      } }, h("div", { class: "pin-form" }, labeled("PIN", pin), labeled("Repeat PIN", again), btn)),
+      err);
+  }
+
+  const current = pinField({ placeholder: "Current PIN" });
+  const next = pinField({ placeholder: "4 to 8 digits" });
+  const again = pinField({ placeholder: "Same again" });
+  const changeBtn = submit("Change PIN");
+  const removeCurrent = pinField({ placeholder: "Current PIN" });
+  const removeBtn = submit("Remove PIN", "btn-danger");
+  return section({ title: "Edit PIN", desc: "Changes need a PIN on each device. Watching, favorites and resume points don't." },
+    h("div", { class: "pin-status" },
+      icon(auth.unlocked ? "unlock" : "lock"),
+      h("div", {},
+        h("strong", {}, auth.unlocked ? "This device can make changes" : "This device is locked"),
+        h("span", {}, auth.unlocked ? "It stays unlocked until you lock it or the PIN changes." : "Enter the PIN to make changes here.")),
+      auth.unlocked
+        ? h("button", { class: "btn btn-sm", onclick: lockDevice }, icon("lock"), "Lock this device")
+        : h("button", { class: "btn btn-sm btn-primary", onclick: async () => { if (await unlockDialog()) authChanged(); } }, icon("unlock"), "Unlock")),
+    h("details", { class: "more" },
+      h("summary", {}, icon("chevronRight"), "Change the PIN"),
+      h("form", { class: "pin-form", onsubmit: async (e) => {
+        e.preventDefault();
+        err.textContent = "";
+        if (!check(next, again)) return;
+        changeBtn.classList.add("busy");
+        try {
+          auth = await api("/api/auth/pin", { method: "PUT", body: { current: current.value, pin: next.value }, noUnlock: true });
+          toast("PIN changed. Other devices are locked until they enter it.");
+          authChanged();
+        } catch (x) { fail(x.message); } finally { changeBtn.classList.remove("busy"); }
+      } }, labeled("Current PIN", current), labeled("New PIN", next), labeled("Repeat", again), changeBtn)),
+    h("details", { class: "more" },
+      h("summary", {}, icon("chevronRight"), "Remove the PIN"),
+      h("form", { class: "pin-form", onsubmit: async (e) => {
+        e.preventDefault();
+        err.textContent = "";
+        removeBtn.classList.add("busy");
+        try {
+          auth = await api("/api/auth/pin", { method: "DELETE", body: { current: removeCurrent.value }, noUnlock: true });
+          toast("PIN removed. Anyone on your network can make changes.");
+          authChanged();
+        } catch (x) { fail(x.message); } finally { removeBtn.classList.remove("busy"); }
+      } }, labeled("Current PIN", removeCurrent), removeBtn)),
+    err,
+    h("p", { class: "hint", style: "margin-top:14px" }, "Forgot it? Stop Itan, then run ", h("code", {}, "itan -reset-pin"), " on the computer it runs on."));
 }
 
 function libCard(lib) {
@@ -1521,6 +1966,7 @@ function backupSection() {
 
   const run = async (dryRun, btn) => {
     if (!file.files.length) { toast("Choose a backup file first", "error"); return; }
+    if (!(await ensureUnlocked())) return;
     btn.classList.add("busy");
     try {
       const res = await fetch(`/api/import?mode=${mode.value}${dryRun ? "&dry_run=1" : ""}`, { method: "POST", body: file.files[0] });
@@ -1539,7 +1985,9 @@ function backupSection() {
 
   return section({ title: "Backup & restore", desc: "Your titles, tags, ratings, favorites and watch history in one file. Keep it as a backup, or bring it to another install. Videos aren't included." },
     h("div", { class: "toolbar" },
-      h("button", { class: "btn btn-primary", onclick: () => { location.href = `/api/export?history=${history.checked ? 1 : 0}`; } }, icon("download"), "Download backup"),
+      h("button", { class: "btn btn-primary", onclick: async () => {
+        if (await ensureUnlocked()) location.href = `/api/export?history=${history.checked ? 1 : 0}`;
+      } }, icon("download"), "Download backup"),
       h("label", { class: "switch", style: "align-items:center" }, history, h("span", { class: "switch-text" }, h("strong", {}, "Include watch history")))),
     h("div", { class: "subsection" },
       h("h3", {}, "Restore or import"),
@@ -1627,6 +2075,7 @@ async function route() {
   keyHandler = null;
   pageMemo = null;
   library = null;
+  onAuthChange = null;
 
   let hash = location.hash || "#/";
   if (hash.startsWith("#/?")) { // old library links
@@ -1652,7 +2101,9 @@ async function route() {
   if (!app.firstChild) app.replaceChildren(skeletonGrid(8));
   try {
     const m = path.match(/^\/item\/(\d+)/);
+    const sm = path.match(/^\/series\/(\d+)/);
     if (m) await renderItem(m[1], params, ctx);
+    else if (sm) await renderSeries(sm[1], params, ctx);
     else if (path.startsWith("/library")) await renderLibrary(params, ctx);
     else if (path.startsWith("/settings")) await renderSettings(ctx);
     else await renderHome(ctx);
@@ -1701,6 +2152,8 @@ narrow.addEventListener("change", setPlaceholder);
 setPlaceholder();
 
 window.addEventListener("hashchange", route);
+// When an unlocked tab is locked from another, its next edit asks again.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadAuth(); });
 // Closing or reloading the tab: save progress and stop any server-side stream.
 window.addEventListener("pagehide", () => { if (onLeave) { onLeave(); onLeave = null; } });
-route();
+loadAuth().finally(route);

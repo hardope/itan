@@ -3,6 +3,7 @@ package db
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	_ "embed"
 	"fmt"
@@ -14,11 +15,22 @@ import (
 //go:embed schema.sql
 var schema string
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 // migrations[n] upgrades a version n-1 database to version n. schema.sql
 // always holds the full current schema for fresh installs.
 var migrations = map[int]string{
+	3: `
+		ALTER TABLE collections ADD COLUMN match_key TEXT;
+		CREATE INDEX collections_match_idx ON collections(kind, match_key);
+		CREATE INDEX collections_parent_idx ON collections(parent_id);
+		CREATE INDEX collection_items_item_idx ON collection_items(item_id);
+		CREATE TABLE edit_sessions (
+		    token_hash      TEXT    PRIMARY KEY,
+		    device          TEXT,
+		    created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+		    last_used_at    INTEGER NOT NULL DEFAULT (unixepoch())
+		) WITHOUT ROWID;`,
 	2: `
 		CREATE TABLE pending_imports (
 		    id              INTEGER PRIMARY KEY,
@@ -122,4 +134,13 @@ func ReindexItem(ctx context.Context, q Execer, itemID int64) error {
 		`INSERT INTO items_fts(rowid, title, original_title, description, tags) VALUES (?, ?, ?, ?, ?)`,
 		itemID, title.String, orig.String, desc.String, tags.String)
 	return err
+}
+
+// NewUID returns a random UUID (version 4), for profiles and collections.
+func NewUID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

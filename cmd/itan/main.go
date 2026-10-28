@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -44,6 +43,14 @@ func run() error {
 	}
 	defer database.Close()
 
+	if cfg.ResetPIN {
+		if err := server.ResetPIN(ctx, database); err != nil {
+			return err
+		}
+		log.Printf("itan: the edit PIN is removed; set a new one in Settings")
+		return nil
+	}
+
 	if err := seed(ctx, database, cfg); err != nil {
 		return err
 	}
@@ -78,7 +85,7 @@ func run() error {
 func seed(ctx context.Context, database *sql.DB, cfg *config.Config) error {
 	if _, err := database.ExecContext(ctx,
 		`INSERT OR IGNORE INTO profiles(id, uid, name, is_admin) VALUES (1, ?, 'Default', 1)`,
-		newUID()); err != nil {
+		db.NewUID()); err != nil {
 		return err
 	}
 	for _, lib := range cfg.Libraries {
@@ -127,12 +134,4 @@ func logAddresses(addr string) {
 	for _, u := range server.LANURLs(addr) {
 		log.Printf("itan: on your network: %s", u)
 	}
-}
-
-func newUID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	b[6] = b[6]&0x0f | 0x40 // UUID v4
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

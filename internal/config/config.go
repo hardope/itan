@@ -30,6 +30,8 @@ type Config struct {
 	// Libraries to create on startup if missing (handy for Docker).
 	// Libraries can also be added from the web UI.
 	Libraries []Library
+	// ResetPIN removes the edit PIN and exits, for when it's forgotten.
+	ResetPIN bool
 }
 
 // Load parses flags, falling back to ITAN_* environment variables.
@@ -45,6 +47,7 @@ func Load() (*Config, error) {
 	flag.StringVar(&c.HWAccel, "hwaccel", env("ITAN_HWACCEL", "auto"), "transcoding encoder: auto, none, videotoolbox, vaapi, nvenc")
 	flag.IntVar(&c.MaxTranscodes, "max-transcodes", envInt("ITAN_MAX_TRANSCODES", 2), "simultaneous transcodes (0 = disable transcoding)")
 	flag.StringVar(&libs, "libraries", env("ITAN_LIBRARIES", ""), `libraries to register, "Name=/path;Other=/path2"`)
+	flag.BoolVar(&c.ResetPIN, "reset-pin", false, "remove the edit PIN (if it's forgotten) and exit")
 	flag.Parse()
 
 	switch c.HWAccel {

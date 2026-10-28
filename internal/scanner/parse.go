@@ -27,15 +27,21 @@ var (
 	spaces = regexp.MustCompile(`\s+`)
 )
 
-// ParseFilename guesses a title, year and episode numbers from a file path.
-func ParseFilename(path string) Parsed {
+// cleanName returns a file's name without extension and bracketed tags,
+// with dots and underscores read as spaces when they separate words.
+func cleanName(path string) string {
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	name = bracketed.ReplaceAllString(name, " ")
-
 	// "Some.Movie.Name.2010" style: dots/underscores act as spaces.
 	if !strings.Contains(name, " ") || strings.Count(name, ".")+strings.Count(name, "_") > strings.Count(name, " ") {
 		name = strings.NewReplacer(".", " ", "_", " ").Replace(name)
 	}
+	return name
+}
+
+// ParseFilename guesses a title, year and episode numbers from a file path.
+func ParseFilename(path string) Parsed {
+	name := cleanName(path)
 
 	var p Parsed
 	cut := len(name)
@@ -94,4 +100,103 @@ func FolderTags(relPath string) []string {
 	return tags
 }
 
-var seasonDir = regexp.MustCompile(`(?i)^(season|series|s)\s*\d+$`)
+var seasonDir = regexp.MustCompile(`(?i)^(?:season|series|s)\s*(\d+)$`)
+
+// Episode is what a path says about one episode of a series.
+type Episode struct {
+	Show   string // series name
+	Season int    // 1 if the path doesn't say
+	Number int
+	Title  string // episode title, if the name has one
+}
+
+var (
+	// "03 - Title", "E03 Title", "Ep 3", "Episode 3" at the start of a name.
+	leadingEpisode = regexp.MustCompile(`(?i)^(?:e|ep|episode)?\s*(\d{1,3})(?:\s*[-.:]\s*|\s+|$)`)
+	trailingYear   = regexp.MustCompile(`\s*\(?(?:19|20)\d{2}\)?$`)
+)
+
+// ParseEpisode recognises episodes in the usual layouts:
+//
+//	Show.S01E02.Title.mkv, Show 1x02 Title.mp4     (show from the name, or
+//	                                               the folder if the name
+//	                                               starts with the marker)
+//	Show/Season 1/02 - Title.mkv, .../Episode 2.mp4 (show from the folder
+//	                                               above the season folder)
+//
+// Anything else isn't an episode as far as names go; people can still put
+// it in a series by hand.
+func ParseEpisode(relPath string) (Episode, bool) {
+	name := cleanName(relPath)
+
+	// The closest folder that isn't a season folder names the show.
+	folderShow, folderSeason := "", 0
+	if dir := filepath.ToSlash(filepath.Dir(relPath)); dir != "." {
+		parts := strings.Split(dir, "/")
+		for i := len(parts) - 1; i >= 0; i-- {
+			if m := seasonDir.FindStringSubmatch(parts[i]); m != nil {
+				if folderSeason == 0 {
+					folderSeason, _ = strconv.Atoi(m[1])
+				}
+				continue
+			}
+			folderShow = cleanShow(parts[i])
+			break
+		}
+	}
+
+	var ep Episode
+	if m := episodeRe.FindStringSubmatchIndex(name); m != nil {
+		sub := episodeRe.FindStringSubmatch(name)
+		if sub[1] != "" {
+			ep.Season, _ = strconv.Atoi(sub[1])
+			ep.Number, _ = strconv.Atoi(sub[2])
+		} else {
+			ep.Season, _ = strconv.Atoi(sub[3])
+			ep.Number, _ = strconv.Atoi(sub[4])
+		}
+		ep.Show = cleanShow(name[:m[0]])
+		ep.Title = cleanEpisodeTitle(name[m[1]:])
+	} else if folderSeason > 0 {
+		m := leadingEpisode.FindStringSubmatchIndex(strings.TrimSpace(name))
+		if m == nil {
+			return Episode{}, false
+		}
+		trimmed := strings.TrimSpace(name)
+		ep.Season = folderSeason
+		ep.Number, _ = strconv.Atoi(trimmed[m[2]:m[3]])
+		ep.Title = cleanEpisodeTitle(trimmed[m[1]:])
+	} else {
+		return Episode{}, false
+	}
+	if ep.Show == "" {
+		ep.Show = folderShow
+	}
+	if ep.Season == 0 {
+		ep.Season = max(folderSeason, 1)
+	}
+	if strings.EqualFold(ep.Title, ep.Show) {
+		ep.Title = ""
+	}
+	return ep, ep.Show != "" && ep.Number > 0
+}
+
+// cleanShow tidies a show name: no year, no separators at the ends.
+func cleanShow(s string) string {
+	s = spaces.ReplaceAllString(strings.Trim(s, " -–:."), " ")
+	if t := strings.Trim(trailingYear.ReplaceAllString(s, ""), " -–:."); t != "" {
+		s = t
+	}
+	return s
+}
+
+// cleanEpisodeTitle drops release junk and separators after the marker.
+func cleanEpisodeTitle(s string) string {
+	if m := junkRe.FindStringIndex(s); m != nil {
+		s = s[:m[0]]
+	}
+	if m := yearRe.FindStringIndex(" " + s + " "); m != nil && m[0] > 0 {
+		s = s[:m[0]-1]
+	}
+	return spaces.ReplaceAllString(strings.Trim(s, " -–:.()"), " ")
+}

@@ -12,7 +12,7 @@
 -- Per-connection pragmas (foreign_keys, journal_mode, busy_timeout) are set
 -- in the connection string, see db.go.
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 
 ------------------------------------------------------------------------
 -- Libraries: root folders the user configured
@@ -177,9 +177,15 @@ CREATE TABLE collections (
     parent_id   INTEGER REFERENCES collections(id) ON DELETE CASCADE,
     position    INTEGER,                          -- order within parent (season number)
     poster_path TEXT,
+    -- Series only: slug of the show name, so episodes found by later scans
+    -- ("Show.S02E01.mkv") join the series even after it was renamed.
+    match_key   TEXT,
     created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
+
+CREATE INDEX collections_match_idx ON collections(kind, match_key);
+CREATE INDEX collections_parent_idx ON collections(parent_id);
 
 CREATE TABLE collection_items (
     collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
@@ -187,6 +193,11 @@ CREATE TABLE collection_items (
     position      INTEGER,                        -- episode number / playlist order
     PRIMARY KEY (collection_id, item_id)
 ) WITHOUT ROWID;
+
+CREATE INDEX collection_items_item_idx ON collection_items(item_id);
+-- An item's series membership is a user-editable field: item_field_sources
+-- has field 'series' with source 'user' once someone set or removed it, and
+-- automatic grouping then leaves the item alone.
 
 ------------------------------------------------------------------------
 -- Profiles and watch history (no passwords by default: LAN household use)
@@ -264,4 +275,15 @@ CREATE INDEX pending_imports_name_idx ON pending_imports(file_name, size_bytes);
 CREATE TABLE settings (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL                         -- JSON-encoded
+) WITHOUT ROWID;
+
+------------------------------------------------------------------------
+-- Devices unlocked for editing with the edit PIN (settings 'edit_pin').
+-- The cookie holds a random token; only its SHA-256 is stored.
+------------------------------------------------------------------------
+CREATE TABLE edit_sessions (
+    token_hash      TEXT    PRIMARY KEY,
+    device          TEXT,                         -- user agent summary
+    created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+    last_used_at    INTEGER NOT NULL DEFAULT (unixepoch())
 ) WITHOUT ROWID;

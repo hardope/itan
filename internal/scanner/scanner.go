@@ -177,6 +177,12 @@ func (s *Scanner) scanLibrary(ctx context.Context, lib library) error {
 	n, _ := res.RowsAffected()
 	s.update(func(st *Status) { st.Missing += int(n) })
 
+	if n, err := s.groupEpisodes(ctx, lib); err != nil {
+		s.addError("grouping episodes: %v", err)
+	} else if n > 0 {
+		log.Printf("scan: %s: grouped %d episodes into series", lib.name, n)
+	}
+
 	// Read the folder's .itan.json if it changed (edits from another
 	// machine), and keep it up to date if the library keeps one.
 	if fr, err := metadata.SyncFolderFile(ctx, s.db, lib.id); err != nil {
@@ -289,12 +295,17 @@ func (s *Scanner) createItem(ctx context.Context, lib library, rel, hash string,
 	parsed := ParseFilename(rel)
 
 	title, titleSrc := parsed.Title, "filename"
+	kind, kindSrc := lib.defaultKind, "folder"
+	if ep, ok := ParseEpisode(rel); ok {
+		// Shown under the series name, so the episode's own title is enough.
+		kind, kindSrc = "episode", "filename"
+		title = ep.Title
+		if title == "" {
+			title = fmt.Sprintf("Episode %d", ep.Number)
+		}
+	}
 	if probe != nil && usableEmbeddedTitle(probe.Title) {
 		title, titleSrc = probe.Title, "embedded"
-	}
-	kind, kindSrc := lib.defaultKind, "folder"
-	if parsed.Episode > 0 {
-		kind, kindSrc = "episode", "filename"
 	}
 
 	var itemID int64
@@ -426,4 +437,69 @@ func nullInt64(n int64) any {
 		return nil
 	}
 	return n
+}
+
+// groupEpisodes puts videos whose paths look like episodes (see
+// ParseEpisode) into series and seasons. Videos already in a season, and
+// videos whose series someone set or removed by hand, are left alone.
+func (s *Scanner) groupEpisodes(ctx context.Context, lib library) (int, error) {
+	type file struct {
+		itemID int64
+		rel    string
+	}
+	var files []file
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT f.item_id, f.rel_path FROM files f
+		 WHERE f.library_id = ? AND f.missing_since IS NULL
+		   AND NOT EXISTS (SELECT 1 FROM collection_items ci JOIN collections c ON c.id = ci.collection_id
+		                    WHERE ci.item_id = f.item_id AND c.kind = 'season')
+		   AND NOT EXISTS (SELECT 1 FROM item_field_sources fs
+		                    WHERE fs.item_id = f.item_id AND fs.field = 'series' AND fs.source = 'user')`, lib.id)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var f file
+		if err := rows.Scan(&f.itemID, &f.rel); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		files = append(files, f)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	grouped := 0
+	for _, f := range files {
+		ep, ok := ParseEpisode(f.rel)
+		if !ok {
+			continue
+		}
+		err := db.Tx(ctx, s.db, func(tx *sql.Tx) error {
+			seriesID, err := db.EnsureSeries(ctx, tx, ep.Show)
+			if err != nil {
+				return err
+			}
+			seasonID, err := db.EnsureSeason(ctx, tx, seriesID, ep.Season)
+			if err != nil {
+				return err
+			}
+			if err := db.SetEpisode(ctx, tx, f.itemID, seasonID, ep.Number); err != nil {
+				return err
+			}
+			// Only if nobody chose a kind for it.
+			_, err = tx.ExecContext(ctx, `
+				UPDATE items SET kind = 'episode' WHERE id = ?
+				   AND NOT EXISTS (SELECT 1 FROM item_field_sources fs WHERE fs.item_id = items.id AND fs.field = 'kind' AND fs.source = 'user')`,
+				f.itemID)
+			return err
+		})
+		if err != nil {
+			return grouped, fmt.Errorf("%s: %w", f.rel, err)
+		}
+		grouped++
+	}
+	return grouped, nil
 }

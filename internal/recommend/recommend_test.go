@@ -363,3 +363,26 @@ func BenchmarkShelves10kCached(b *testing.B) {
 		}
 	}
 }
+
+// A series is suggested by its next episode only.
+func TestSeriesSuggestsNextEpisode(t *testing.T) {
+	l := mixed(t)
+	l.exec(`INSERT INTO collections(id, uid, kind, title) VALUES (100, 's', 'series', 'Show')`)
+	l.exec(`INSERT INTO collections(id, uid, kind, title, parent_id, position) VALUES (101, 's1', 'season', 'Season 1', 100, 1)`)
+	for i := 1; i <= 4; i++ {
+		id := l.add(fmt.Sprintf("ep%d", i), "genre:music", "tag:jazz")
+		l.exec(`INSERT INTO collection_items(collection_id, item_id, position) VALUES (101, ?, ?)`, id, i)
+	}
+	l.watched("jazz1", 1)
+	l.watched("ep1", 1)
+
+	var eps []string
+	for _, name := range l.titles(l.model().ForYou(10, nil)) {
+		if strings.HasPrefix(name, "ep") {
+			eps = append(eps, name)
+		}
+	}
+	if len(eps) != 1 || eps[0] != "ep2" {
+		t.Fatalf("episodes suggested = %v, want only ep2", eps)
+	}
+}

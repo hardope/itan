@@ -55,6 +55,7 @@ var (
 	folderTagWeight  = 0.5 // multiplier for tags that came from folder names
 	parentTagWeight  = 0.5 // "jazz" also counts as half of its parent "music"
 	collectionWeight = 1.5
+	seasonShare      = 0.5 // a season counts for half its series
 	kindWeight       = 0.4
 	decadeWeight     = 0.3
 	languageWeight   = 0.3
@@ -76,6 +77,9 @@ type features struct {
 	rating   sql.NullInt64 // the household's own rating
 	duration int64
 	vec      map[string]float64 // L2-normalized
+	// Episodes: their series and place in it (0 if not an episode).
+	series          int64
+	season, episode int
 }
 
 // Library is every available item's features. It only depends on metadata,
@@ -92,6 +96,8 @@ type item struct {
 	liked   bool    // favorite or rated 8+
 	played  int64   // last_played_at, 0 if never
 	playing bool    // watched a fair part of it (anchor for "because you watched")
+	done    bool    // finished
+	hidden  bool    // an episode that isn't its series' next one: never suggested
 }
 
 // Model is one profile's view of the library.
@@ -184,16 +190,37 @@ func LoadLibrary(ctx context.Context, q db.Execer) (*Library, error) {
 		return nil, err
 	}
 
+	// Collections, and for episodes their series too: episodes of one
+	// series are alike across seasons.
+	byID := map[int64]*features{}
+	for _, f := range lib.items {
+		byID[f.id] = f
+	}
 	err = eachRow(ctx, q, `
-		SELECT ci.item_id, c.id, c.title FROM collection_items ci JOIN collections c ON c.id = ci.collection_id`, nil,
+		SELECT ci.item_id, c.id, c.title, c.kind, ci.position, c.position, p.id, p.title
+		  FROM collection_items ci
+		  JOIN collections c ON c.id = ci.collection_id
+		  LEFT JOIN collections p ON p.id = c.parent_id AND p.kind = 'series'`, nil,
 		func(rows *sql.Rows) error {
 			var itemID, colID int64
-			var title string
-			if err := rows.Scan(&itemID, &colID, &title); err != nil {
+			var title, kind string
+			var episode, season, seriesID sql.NullInt64
+			var seriesTitle sql.NullString
+			if err := rows.Scan(&itemID, &colID, &title, &kind, &episode, &season, &seriesID, &seriesTitle); err != nil {
 				return err
 			}
 			key := "col:" + strconv.FormatInt(colID, 10)
 			lib.labels[key] = title
+			if kind == "season" && seriesID.Valid {
+				add(itemID, key, collectionWeight*seasonShare)
+				skey := "col:" + strconv.FormatInt(seriesID.Int64, 10)
+				lib.labels[skey] = seriesTitle.String
+				add(itemID, skey, collectionWeight)
+				if f := byID[itemID]; f != nil {
+					f.series, f.season, f.episode = seriesID.Int64, int(season.Int64), int(episode.Int64)
+				}
+				return nil
+			}
 			add(itemID, key, collectionWeight)
 			return nil
 		})
@@ -256,6 +283,8 @@ func (lib *Library) Model(ctx context.Context, q db.Execer, profileID int64, now
 		return nil, err
 	}
 
+	hideLaterEpisodes(m.items)
+
 	m.taste = map[string]float64{}
 	for _, it := range m.items {
 		if it.weight == 0 {
@@ -305,8 +334,38 @@ func (it *item) engagement(pos sql.NullInt64, completed sql.NullBool, playCount 
 	}
 	it.weight = w
 	it.seen = completed.Bool || pos.Int64 > 0 || favorite.Bool || it.rating.Valid
+	it.done = completed.Bool
 	it.liked = favorite.Bool || it.rating.Int64 >= 8
 	it.played = lastPlayed.Int64
+}
+
+// hideLaterEpisodes leaves one episode per series to suggest: the first one
+// not finished. ("Recommended: episodes 4, 5 and 6" helps nobody.)
+func hideLaterEpisodes(items []*item) {
+	bySeries := map[int64][]*item{}
+	for _, it := range items {
+		if it.series != 0 {
+			bySeries[it.series] = append(bySeries[it.series], it)
+		}
+	}
+	for _, eps := range bySeries {
+		sort.Slice(eps, func(i, j int) bool {
+			if eps[i].season != eps[j].season {
+				return eps[i].season < eps[j].season
+			}
+			return eps[i].episode < eps[j].episode
+		})
+		next := -1
+		for i, e := range eps {
+			if !e.done {
+				next = i
+				break
+			}
+		}
+		for i, e := range eps {
+			e.hidden = i != next
+		}
+	}
 }
 
 // HasHistory reports whether the profile has any taste signal yet.
@@ -319,7 +378,7 @@ func (m *Model) ForYou(n int, exclude map[int64]bool) []Rec {
 	}
 	var pool []scored
 	for _, c := range m.items {
-		if c.seen || exclude[c.id] {
+		if c.seen || c.hidden || exclude[c.id] {
 			continue
 		}
 		if s := dot(m.taste, c.vec) + m.freshness(c); s >= minScore {
@@ -342,7 +401,7 @@ func (m *Model) Similar(id int64, n int, exclude map[int64]bool, unseenOnly bool
 	}
 	var pool []scored
 	for _, c := range m.items {
-		if c.id == id || exclude[c.id] || (unseenOnly && c.seen) {
+		if c.id == id || c.hidden || exclude[c.id] || (unseenOnly && c.seen) {
 			continue
 		}
 		s := dot(src.vec, c.vec)
@@ -416,7 +475,7 @@ func (m *Model) Shelves(n int) []Shelf {
 func (m *Model) recent(n int) []Rec {
 	var list []*item
 	for _, it := range m.items {
-		if !it.seen {
+		if !it.seen && !it.hidden {
 			list = append(list, it)
 		}
 	}
@@ -439,7 +498,7 @@ func (m *Model) recent(n int) []Rec {
 func (m *Model) different(n int, exclude map[int64]bool) []Rec {
 	var pool []scored
 	for _, it := range m.items {
-		if !it.seen && !exclude[it.id] {
+		if !it.seen && !it.hidden && !exclude[it.id] {
 			pool = append(pool, scored{it, dot(m.taste, it.vec)})
 		}
 	}

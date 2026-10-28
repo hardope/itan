@@ -33,11 +33,12 @@ type Server struct {
 	hls     *hlsManager
 	recs    recCache
 	folders *folderWriter
+	pins    *pinGuard
 }
 
 func New(database *sql.DB, cfg *config.Config, sc *scanner.Scanner) *Server {
 	return &Server{db: database, cfg: cfg, scanner: sc, thumbs: newThumbnailer(cfg), hls: newHLSManager(cfg),
-		folders: newFolderWriter(database)}
+		folders: newFolderWriter(database), pins: newPinGuard()}
 }
 
 // Close finishes background work that shouldn't be lost on shutdown.
@@ -48,20 +49,29 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/items", s.listItems)
 	mux.HandleFunc("GET /api/items/{id}", s.getItem)
-	mux.HandleFunc("PATCH /api/items/{id}", s.updateItem)
+	mux.HandleFunc("PATCH /api/items/{id}", s.requireEdit(s.updateItem))
 	mux.HandleFunc("POST /api/items/{id}/progress", s.saveProgress)
 	mux.HandleFunc("GET /api/items/{id}/thumbnail", s.thumbnail)
 	mux.HandleFunc("GET /api/items/{id}/similar", s.similarItems)
 	mux.HandleFunc("PUT /api/items/{id}/favorite", s.setFavorite)
 	mux.HandleFunc("GET /api/recommendations", s.recommendations)
+	mux.HandleFunc("GET /api/series", s.listSeries)
+	mux.HandleFunc("GET /api/series/{id}", s.getSeries)
+	mux.HandleFunc("PATCH /api/series/{id}", s.requireEdit(s.updateSeries))
+	mux.HandleFunc("DELETE /api/series/{id}", s.requireEdit(s.deleteSeries))
 	mux.HandleFunc("GET /api/info", s.info)
 	mux.HandleFunc("GET /api/tags", s.listTags)
 	mux.HandleFunc("GET /api/libraries", s.listLibraries)
-	mux.HandleFunc("POST /api/libraries", s.addLibrary)
-	mux.HandleFunc("PATCH /api/libraries/{id}", s.updateLibrary)
-	mux.HandleFunc("DELETE /api/libraries/{id}", s.deleteLibrary)
-	mux.HandleFunc("GET /api/export", s.exportLibrary)
-	mux.HandleFunc("POST /api/import", s.importLibrary)
+	mux.HandleFunc("POST /api/libraries", s.requireEdit(s.addLibrary))
+	mux.HandleFunc("PATCH /api/libraries/{id}", s.requireEdit(s.updateLibrary))
+	mux.HandleFunc("DELETE /api/libraries/{id}", s.requireEdit(s.deleteLibrary))
+	mux.HandleFunc("GET /api/export", s.requireEdit(s.exportLibrary))
+	mux.HandleFunc("POST /api/import", s.requireEdit(s.importLibrary))
+	mux.HandleFunc("GET /api/auth", s.authState)
+	mux.HandleFunc("POST /api/auth/unlock", s.unlock)
+	mux.HandleFunc("POST /api/auth/lock", s.lock)
+	mux.HandleFunc("PUT /api/auth/pin", s.setPIN)
+	mux.HandleFunc("DELETE /api/auth/pin", s.removePIN)
 	mux.HandleFunc("GET /api/scan", s.scanStatus)
 	mux.HandleFunc("POST /api/scan", s.startScan)
 	mux.HandleFunc("GET /stream/{id}", s.stream)

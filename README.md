@@ -57,6 +57,41 @@ folders from the ⚙ page in the web UI.
 | `-ffmpeg` | `ITAN_FFMPEG` | `ffmpeg` | ffmpeg binary |
 | `-hwaccel` | `ITAN_HWACCEL` | `auto` | Transcoding encoder: `auto`, `none` (software), `videotoolbox`, `vaapi`, `nvenc` |
 | `-max-transcodes` | `ITAN_MAX_TRANSCODES` | `2` | Simultaneous transcodes, `0` to disable transcoding |
+| `-reset-pin` | | | Remove the edit PIN (if it's forgotten) and exit |
+
+## Series
+
+Episodes are grouped into series and seasons. Files named the usual ways
+are grouped automatically on each scan:
+
+- `Show.S01E02.Episode Title.mkv`, `Show - 1x02 - Episode Title.mp4` (the
+  show name comes from the file name, or from the folder if the name starts
+  with `S01E02`)
+- `Show/Season 1/02 - Episode Title.mkv`, `Show/Season 1/Episode 2.mp4`
+
+Anything else can be grouped by hand: open a video's *Edit details* and fill
+in *Series*, *Season* and *Episode* (leave the episode empty to add it at the
+end). Grouping by hand always wins: rescans never move an episode you placed
+or took out. *Edit series* renames a series, describes it, or splits it back
+into separate videos.
+
+A series shows as one card in the library. Its page lists the episodes by
+season with what you've watched, and *Play* picks up where you are: the
+episode in progress, or the one after the last one you finished. Episode
+pages link back to the series and have a *Next episode* button.
+Recommendations suggest a series by its next episode only.
+
+## Edit PIN
+
+Anyone on your network can watch, but you can keep them from changing
+things. Set a PIN in Settings, and editing titles, tags, ratings, series,
+folders and backups asks for it once per device. Favorites and resume
+points stay free. The lock button in the header shows whether this device
+can make changes, and locks it again.
+
+Five wrong PINs from one device pause further tries for 30 seconds, doubling
+each time up to 15 minutes. Forgot it? Stop Itan and run `itan -reset-pin`
+on the computer it runs on.
 
 ## Watching
 
@@ -194,8 +229,13 @@ ways. Both are described in [docs/export-format.md](docs/export-format.md).
 |---|---|
 | `GET /api/items?q=&tag=&exclude=&kind=&quality=&sort=&limit=&offset=` | List and search. `tag`/`exclude` are repeatable refs like `genre:music`. `X-Total-Count` has the number of matches |
 | `GET /api/items?shelf=continue` | Partially watched |
+| `GET /api/items?group=0` | Episodes one by one instead of one card per series |
 | `GET /api/items/{id}` | Details, tags, tracks, files, field sources |
-| `PATCH /api/items/{id}` | Edit fields, `add_tags`, `remove_tags` |
+| `PATCH /api/items/{id}` | Edit fields, `add_tags`, `remove_tags`, `series` (`{"title", "season", "episode"}` or `null`) |
+| `GET /api/series`, `GET /api/series/{id}` | Series names; one series with its seasons, episodes and what to play next |
+| `PATCH/DELETE /api/series/{id}` | Rename or describe a series; split it into separate videos |
+| `GET /api/auth`, `POST /api/auth/unlock`, `POST /api/auth/lock` | Edit PIN state; unlock (`{"pin"}`) or lock this device |
+| `PUT/DELETE /api/auth/pin` | Set or change (`{"current", "pin"}`), or remove (`{"current"}`) the edit PIN |
 | `POST /api/items/{id}/progress` | Save resume position |
 | `PUT /api/items/{id}/favorite` | `{"favorite": true}` |
 | `GET /api/info` | Addresses other devices on the network can use |
@@ -208,6 +248,13 @@ ways. Both are described in [docs/export-format.md](docs/export-format.md).
 | `POST /api/import?mode=merge\|replace&dry_run=1` | Import an export file (request body, plain or gzipped) → report |
 | `GET/POST /api/scan` | Scan status / start a scan |
 | `GET /stream/{id}` | The video file (direct play) |
+
+With an edit PIN set, the requests that change things (`PATCH`/`POST`/`DELETE`
+on items, series, libraries and import) and `GET /api/export` need an
+unlocked device; otherwise they answer `401 {"locked": true}`.
+
+| | |
+|---|---|
 | `POST /api/items/{id}/hls` | Start a session: `{"session": "...", "start": 0, "transcode": false}` → playlist URL and encoder used |
 | `GET /hls/{session}/{file}` | Playlist and segments |
 | `DELETE /api/hls/{session}` | Stop a session |
@@ -230,5 +277,5 @@ docs/                  metadata export format spec
 
 - HDR → SDR tone mapping when transcoding (HDR currently looks washed out)
 - External subtitles (SRT → WebVTT)
-- "Not interested" on recommendations; "Up next" for series episodes
+- "Not interested" on recommendations; detecting multi-part films ("Part 1", "Part 2")
 - mDNS (`itan.local`), installable PWA, multiple profiles

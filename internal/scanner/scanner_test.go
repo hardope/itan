@@ -111,3 +111,30 @@ func TestPlaybackMode(t *testing.T) {
 		}
 	}
 }
+
+func TestParseEpisode(t *testing.T) {
+	cases := []struct {
+		path string
+		want Episode
+		ok   bool
+	}{
+		{"Breaking.Bad.S01E02.Cats.in.the.Bag.720p.WEB-DL.mkv", Episode{"Breaking Bad", 1, 2, "Cats in the Bag"}, true},
+		{"TV/The Office (US)/Season 2/The Office - 2x05 - Halloween.mp4", Episode{"The Office", 2, 5, "Halloween"}, true},
+		{"Planet Earth II/S01E03.mkv", Episode{"Planet Earth II", 1, 3, ""}, true},
+		{"Shows/Dark/Season 3/04 - The Origin.mkv", Episode{"Dark", 3, 4, "The Origin"}, true},
+		{"Shows/Dark/Season 3/Episode 7.mp4", Episode{"Dark", 3, 7, ""}, true},
+		{"Shows/Dark/S2/E01 Beginnings and Endings.mp4", Episode{"Dark", 2, 1, "Beginnings and Endings"}, true},
+		{"Lost (2004) S01E01 Pilot.avi", Episode{"Lost", 1, 1, "Pilot"}, true},
+		// Not episodes by name alone.
+		{"Movies/Inception (2010).mkv", Episode{}, false},
+		{"Season 1/03.mkv", Episode{}, false}, // no show folder
+		{"Concerts/Live Set 2019.mp4", Episode{}, false},
+		{"Shows/Dark/Season 1/2001 A Space Odyssey.mkv", Episode{}, false},
+	}
+	for _, c := range cases {
+		got, ok := ParseEpisode(c.path)
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("ParseEpisode(%q) = %+v, %v; want %+v, %v", c.path, got, ok, c.want, c.ok)
+		}
+	}
+}
