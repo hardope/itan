@@ -1,0 +1,22 @@
+services:
+  itan:
+    build: .
+    container_name: itan
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      # Mount each video folder read-only under /media. Subfolders become tags.
+      - /path/to/your/videos:/media/Videos:ro
+      # - /path/to/documentaries:/media/Documentaries:ro
+    environment:
+      # One library per mounted folder: "Name=/path;Name2=/path2"
+      ITAN_LIBRARIES: "Videos=/media/Videos"
+      ITAN_SCAN_INTERVAL: 30m
+      # ITAN_MAX_TRANSCODES: 2
+    # Hardware transcoding with an Intel/AMD GPU (VAAPI): pass the GPU through.
+    # The container user must be able to read it, e.g. group_add: ["video"] or
+    # the numeric group of /dev/dri/renderD128 on the host.
+    # devices:
+    #   - /dev/dri:/dev/dri
+    restart: unless-stopped

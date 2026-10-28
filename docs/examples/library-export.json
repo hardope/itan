@@ -1,0 +1,106 @@
+{
+  "format": "itan-library",
+  "version": "1.0",
+  "exported_at": "2026-10-27T14:03:11Z",
+  "generator": "itan 0.1.0",
+  "scope": {
+    "include_history": true,
+    "libraries": ["Documentaries", "Music"]
+  },
+  "libraries": [
+    { "name": "Documentaries", "default_kind": "documentary", "folder_tags": true },
+    { "name": "Music", "default_kind": "music_video", "folder_tags": true }
+  ],
+  "tags": [
+    { "ref": "genre:documentary", "name": "Documentary", "parent": null, "color": "#2f9e44" },
+    { "ref": "genre:music", "name": "Music", "parent": null, "color": "#7c5cff" },
+    { "ref": "genre:jazz", "name": "Jazz", "parent": "genre:music", "color": null },
+    { "ref": "tag:nature", "name": "Nature", "parent": null, "color": null },
+    { "ref": "tag:live-concert", "name": "Live Concert", "parent": null, "color": "#e8590c" },
+    { "ref": "tag:4k", "name": "4K", "parent": null, "color": null },
+    { "ref": "mood:chill", "name": "Chill", "parent": null, "color": null }
+  ],
+  "items": [
+    {
+      "hash": "ph1:9f2c4e1ab03d7781",
+      "size": 1843204096,
+      "paths": [
+        { "library": "Documentaries", "path": "Nature/Planet Earth II - Islands (2016).mkv" }
+      ],
+      "fields": {
+        "title": { "value": "Planet Earth II: Islands", "source": "user" },
+        "year": { "value": 2016, "source": "filename" },
+        "kind": { "value": "documentary", "source": "folder" },
+        "rating": { "value": 9, "source": "user" }
+      },
+      "tags": [
+        { "ref": "genre:documentary", "source": "folder" },
+        { "ref": "tag:nature", "source": "folder" },
+        { "ref": "tag:4k", "source": "filename", "removed": true }
+      ],
+      "external_ids": { "tmdb": "68595" },
+      "added_at": "2026-03-02T19:22:40Z",
+      "updated_at": "2026-10-20T08:11:05Z",
+      "technical": { "duration_ms": 2941000, "width": 1920, "height": 1080, "video_codec": "hevc" }
+    },
+    {
+      "hash": "ph1:03be77d1c2a95f40",
+      "size": 712884224,
+      "paths": [
+        { "library": "Music", "path": "Jazz/montreux_2019_set.mp4" }
+      ],
+      "fields": {
+        "title": { "value": "Montreux Jazz Festival 2019 - Full Set", "source": "user" },
+        "year": { "value": 2019, "source": "filename" },
+        "kind": { "value": "concert", "source": "user" }
+      },
+      "tags": [
+        { "ref": "genre:jazz", "source": "folder" },
+        { "ref": "tag:live-concert", "source": "user" },
+        { "ref": "mood:chill", "source": "user" }
+      ],
+      "external_ids": {},
+      "added_at": "2026-05-11T10:00:00Z",
+      "updated_at": "2026-09-01T17:45:12Z"
+    }
+  ],
+  "collections": [
+    {
+      "uid": "c6a1d6f0-3b5e-4b8e-9d0a-2f1f6f1f9b21",
+      "kind": "series",
+      "title": "Planet Earth II",
+      "parent": null,
+      "position": null,
+      "items": [
+        { "hash": "ph1:9f2c4e1ab03d7781", "position": 1 }
+      ]
+    },
+    {
+      "uid": "5d0f3a8e-7c21-4f6b-a3d9-8e2b1c4a6f10",
+      "kind": "playlist",
+      "title": "Sunday evening",
+      "parent": null,
+      "position": null,
+      "items": [
+        { "hash": "ph1:03be77d1c2a95f40", "position": 1 },
+        { "hash": "ph1:9f2c4e1ab03d7781", "position": 2 }
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "uid": "0b9e2c71-4d8a-4f3e-b6a5-1c7d9e2f8a34",
+      "name": "Ope",
+      "state": [
+        {
+          "hash": "ph1:9f2c4e1ab03d7781",
+          "position_ms": 1203000,
+          "completed": false,
+          "play_count": 1,
+          "favorite": true,
+          "last_played_at": "2026-10-20T21:40:00Z"
+        }
+      ]
+    }
+  ]
+}
