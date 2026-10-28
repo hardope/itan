@@ -33,6 +33,7 @@ type itemSummary struct {
 	PositionMS   int64     `json:"position_ms"`
 	Completed    bool      `json:"completed"`
 	Tags         []tagJSON `json:"tags"`
+	Reason       string    `json:"reason,omitempty"` // why it was recommended
 }
 
 var sortOrders = map[string]string{
@@ -91,18 +92,26 @@ func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
 	limit := clamp(atoi(q.Get("limit"), 200), 1, 1000)
 	offset := max(atoi(q.Get("offset"), 0), 0)
 
-	query := fmt.Sprintf(`
+	items, err := s.querySummaries(r.Context(), fmt.Sprintf("WHERE %s ORDER BY %s LIMIT %d OFFSET %d",
+		strings.Join(where, " AND "), order, limit, offset), args...)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// querySummaries loads item cards. tail is the WHERE/ORDER clause; the
+// first argument must be the profile id.
+func (s *Server) querySummaries(ctx context.Context, tail string, args ...any) ([]*itemSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT i.id, i.title, i.year, i.kind, i.duration_ms, i.quality_label, i.playback_mode,
 		       COALESCE(ps.position_ms, 0), COALESCE(ps.completed, 0)
 		  FROM items i
 		  LEFT JOIN play_state ps ON ps.item_id = i.id AND ps.profile_id = ?
-		 WHERE %s ORDER BY %s LIMIT %d OFFSET %d`,
-		strings.Join(where, " AND "), order, limit, offset)
-
-	rows, err := s.db.QueryContext(r.Context(), query, args...)
+		 `+tail, args...)
 	if err != nil {
-		serverError(w, r, err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -112,21 +121,15 @@ func (s *Server) listItems(w http.ResponseWriter, r *http.Request) {
 		it := &itemSummary{Tags: []tagJSON{}}
 		if err := rows.Scan(&it.ID, &it.Title, &it.Year, &it.Kind, &it.DurationMS, &it.Quality,
 			&it.PlaybackMode, &it.PositionMS, &it.Completed); err != nil {
-			serverError(w, r, err)
-			return
+			return nil, err
 		}
 		items = append(items, it)
 		byID[it.ID] = it
 	}
 	if err := rows.Err(); err != nil {
-		serverError(w, r, err)
-		return
+		return nil, err
 	}
-	if err := s.attachTags(r.Context(), byID); err != nil {
-		serverError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, items)
+	return items, s.attachTags(ctx, byID)
 }
 
 func (s *Server) attachTags(ctx context.Context, byID map[int64]*itemSummary) error {
@@ -183,6 +186,7 @@ type itemDetail struct {
 	ProbeError    *string           `json:"probe_error"`
 	PositionMS    int64             `json:"position_ms"`
 	Completed     bool              `json:"completed"`
+	Favorite      bool              `json:"favorite"`
 	Sources       map[string]string `json:"sources"` // field -> where its value came from
 	Tags          []tagJSON         `json:"tags"`
 	Streams       []streamJSON      `json:"streams"`
@@ -225,14 +229,14 @@ func (s *Server) loadItem(ctx context.Context, id int64) (*itemDetail, error) {
 		       i.description, i.year, i.kind, i.rating, i.language, i.container, i.duration_ms,
 		       i.bitrate, i.width, i.height, i.video_codec, i.hdr, i.quality_label,
 		       i.playback_mode, i.probe_error,
-		       COALESCE(ps.position_ms, 0), COALESCE(ps.completed, 0)
+		       COALESCE(ps.position_ms, 0), COALESCE(ps.completed, 0), COALESCE(ps.favorite, 0)
 		  FROM items i
 		  LEFT JOIN play_state ps ON ps.item_id = i.id AND ps.profile_id = ?
 		 WHERE i.id = ?`, profileID, id).Scan(
 		&d.ID, &d.ContentHash, &d.SizeBytes, &d.Title, &d.SortTitle, &d.OriginalTitle,
 		&d.Description, &d.Year, &d.Kind, &d.Rating, &d.Language, &d.Container, &d.DurationMS,
 		&d.Bitrate, &d.Width, &d.Height, &d.VideoCodec, &d.HDR, &d.Quality,
-		&d.PlaybackMode, &d.ProbeError, &d.PositionMS, &d.Completed)
+		&d.PlaybackMode, &d.ProbeError, &d.PositionMS, &d.Completed, &d.Favorite)
 	if err != nil {
 		return nil, err
 	}
@@ -410,6 +414,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
+	s.recs.invalidate()
 	s.writeSidecars(r, id)
 	s.getItem(w, r)
 }

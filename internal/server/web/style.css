@@ -138,6 +138,17 @@ h2 { font-size: 17px; margin: 8px 0 12px; }
 .card .title { margin-top: 6px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .meta { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+.card .reason { color: var(--muted); font-size: 12px; font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Shelves: one row of cards, scrolls sideways */
+.shelf { margin-bottom: 24px; min-width: 0; }
+.row-scroll {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 200px;
+  gap: 16px; overflow-x: auto; padding-bottom: 8px;
+  scroll-snap-type: x proximity; overscroll-behavior-x: contain;
+}
+.row-scroll .card { scroll-snap-align: start; }
+
 .empty { color: var(--muted); padding: 40px 0; text-align: center; }
 
 /* Item page */
@@ -166,6 +177,10 @@ video { width: 100%; max-height: 75vh; background: #000; border-radius: var(--ra
 .player:fullscreen video { max-height: none; flex: 1; min-height: 0; }
 @media (max-width: 520px) { .pc-time { font-size: 12px; } .pc { gap: 4px; padding: 6px; } }
 .item h1 { font-size: 24px; margin: 14px 0 4px; }
+.title-row { display: flex; align-items: flex-start; gap: 10px; }
+.title-row h1 { flex: 1; min-width: 0; }
+.fav { margin-top: 14px; font-size: 20px; line-height: 1; padding: 6px 10px; color: var(--danger); }
+.item .shelf { margin-top: 20px; }
 .item .sub { color: var(--muted); margin-bottom: 10px; }
 .warn { background: var(--warn-bg); color: var(--warn-text); padding: 10px 12px; border-radius: 8px; margin-top: 10px; font-size: 14px; }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
@@ -204,4 +219,5 @@ dl.tech dd { margin: 0; overflow-wrap: anywhere; }
   .brand::first-letter { font-size: 18px; }
   main { padding: 12px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .row-scroll { grid-auto-columns: 150px; gap: 12px; }
 }

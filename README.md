@@ -12,6 +12,8 @@ Point it at your folders and watch on any device on your Wi-Fi.
   never overwrite what you set.
 - **Files are identified by content**, not path, so renames and moves keep
   their metadata.
+- **Recommendations that explain themselves**, built from your own tags and
+  watch history. Nothing leaves the server.
 - **One small binary** with SQLite and the web UI built in. ffmpeg is optional
   but recommended.
 
@@ -95,6 +97,42 @@ its platform on the first transcode, by encoding a test clip:
 If none work, it falls back to software (libx264), which handles about one
 1080p stream on a modest 4-core CPU. The log says which encoder is used.
 
+## Recommendations
+
+The home page shows recommendation rows above the full list, and every video
+page has *More like this*. Everything is computed on the server from your
+library's metadata and watch history. There are no external services and no
+training step.
+
+| Row | What's in it |
+|---|---|
+| Recommended for you | Unwatched videos closest to your taste, mixed so one genre doesn't fill the row |
+| Because you watched *X* | Like one of the two videos you watched most recently |
+| Something different | Unwatched videos far from your usual, in a new order each day |
+| Recently added | Shown instead of the rows above until there's some history |
+
+Each card says why it's there: "Because you liked Ocean Giants" or, on *More
+like this*, the tags two videos share. A row with fewer than three videos is
+hidden.
+
+**What counts.** Each video's genres, tags, people, moods, collections, kind,
+decade and language become its "fingerprint". Rare tags count for much more
+than common ones: sharing a director says more than both being "Movies".
+Tags made from folder names count for half. Your taste is built from:
+
+- **For:** finishing a video (more if rewatched), watching a good part of it,
+  ♥ favorites, and ratings of 6 to 10.
+- **Against:** ratings of 1 to 4, and stopping in the first minutes of a video
+  you never came back to after a week.
+
+Viewing signals fade over about four months; favorites and ratings don't. So
+the quickest ways to steer recommendations are the ♥ button, the rating
+field, and good tags.
+
+Library fingerprints are cached for up to a minute after a scan (edits made in
+the app apply immediately). Watch history is read fresh on every request. On a
+10,000-video library a request takes about 30 ms.
+
 ## Backup, restore and moving between devices
 
 Everything you create (titles, descriptions, ratings, genres and tags,
@@ -131,6 +169,9 @@ ways. Both are described in [docs/export-format.md](docs/export-format.md).
 | `GET /api/items/{id}` | Details, tags, tracks, files, field sources |
 | `PATCH /api/items/{id}` | Edit fields, `add_tags`, `remove_tags` |
 | `POST /api/items/{id}/progress` | Save resume position |
+| `PUT /api/items/{id}/favorite` | `{"favorite": true}` |
+| `GET /api/recommendations?limit=` | Home page rows: `{"shelves": [{id, title, items}]}`, each item with a `reason` |
+| `GET /api/items/{id}/similar?limit=` | More like this |
 | `GET /api/items/{id}/thumbnail` | JPEG, generated on first request |
 | `GET /api/tags` | Tags with item counts |
 | `GET/POST /api/libraries`, `PATCH/DELETE /api/libraries/{id}` | Manage folders; PATCH sets `write_sidecars`, `folder_tags`, `default_kind` |
@@ -150,6 +191,7 @@ internal/config/       flags and env vars
 internal/db/           schema.sql, migrations, tag helpers, search index
 internal/scanner/      walk, ph1 hash, filename parsing, ffprobe
 internal/metadata/     export, import, sidecars, pending imports
+internal/recommend/    recommendations: feature vectors, taste, diversity
 internal/server/       HTTP API, streaming, thumbnails
 internal/server/web/   web UI (plain HTML/CSS/JS, embedded in the binary)
 docs/                  metadata export format spec
@@ -160,5 +202,5 @@ docs/                  metadata export format spec
 - HDR → SDR tone mapping when transcoding (HDR currently looks washed out)
 - External subtitles (SRT → WebVTT)
 - Re-read sidecars that changed after a file was first scanned
-- "More like this" and recommendation shelves
+- "Not interested" on recommendations; "Up next" for series episodes
 - mDNS (`itan.local`), installable PWA, multiple profiles

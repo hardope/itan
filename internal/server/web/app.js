@@ -86,7 +86,15 @@ function card(it) {
     ),
     h("div", { class: "title", title: it.title }, it.title),
     h("div", { class: "meta" }, meta || " "),
+    it.reason && h("div", { class: "reason", title: it.reason }, it.reason),
   );
+}
+
+// shelf is a titled, horizontally scrolling row of cards.
+function shelf(title, items) {
+  return h("section", { class: "shelf" },
+    h("h2", {}, title),
+    h("div", { class: "row-scroll" }, items.map(card)));
 }
 
 async function renderLibrary() {
@@ -99,12 +107,14 @@ async function renderLibrary() {
   f.exclude.forEach((t) => params.append("exclude", t));
   const filtered = Boolean(f.q || f.tag.length || f.exclude.length);
 
-  const [items, tags, cont, libs] = await Promise.all([
+  const [items, tags, cont, recs, libs] = await Promise.all([
     api("/api/items?" + params),
     api("/api/tags"),
     filtered ? [] : api("/api/items?shelf=continue&limit=12"),
+    filtered ? { shelves: [] } : api("/api/recommendations").catch(() => ({ shelves: [] })),
     api("/api/libraries"),
   ]);
+  const shelves = recs.shelves;
 
   if (!libs.length) {
     app.replaceChildren(h("div", { class: "empty" },
@@ -140,9 +150,9 @@ async function renderLibrary() {
       h("span", { class: "count" }, `${items.length} item${items.length === 1 ? "" : "s"}`)),
     tags.length && h("div", { class: "chips" }, tags.map(chip),
       h("span", { class: "hint" }, "click: include · again: exclude")),
-    cont.length && h("h2", {}, "Continue watching"),
-    cont.length && h("div", { class: "grid" }, cont.map(card)),
-    cont.length && h("h2", {}, "All"),
+    cont.length && shelf("Continue watching", cont),
+    ...shelves.map((s) => shelf(s.title, s.items)),
+    (cont.length || shelves.length) && h("h2", {}, "All"),
     items.length ? h("div", { class: "grid" }, items.map(card))
       : h("div", { class: "empty" }, filtered ? "Nothing matches these filters." : "No videos found yet. Is a scan running?"),
   ).childNodes);
@@ -186,17 +196,45 @@ async function renderItem(id) {
 
   const sub = [it.year, kindLabel(it.kind), fmtDuration(it.duration_ms), it.quality && it.quality.toUpperCase()]
     .filter(Boolean).join(" · ");
+  const similar = h("div", {});
 
   app.replaceChildren(h("div", { class: "item" },
     h("div", {},
       player.el, warn,
-      h("h1", {}, it.title),
+      h("div", { class: "title-row" }, h("h1", {}, it.title), favoriteButton(it)),
       h("div", { class: "sub" }, sub),
       it.description && h("p", {}, it.description),
       tagPanel(it),
+      similar,
     ),
     h("div", {}, editPanel(it), techPanel(it)),
   ));
+
+  api(`/api/items/${id}/similar`).then((items) => {
+    if (items.length) similar.replaceChildren(shelf("More like this", items));
+  }).catch(() => {});
+}
+
+function favoriteButton(it) {
+  const btn = h("button", { class: "fav" });
+  const draw = () => {
+    btn.textContent = it.favorite ? "♥" : "♡";
+    btn.title = it.favorite ? "Remove from favorites" : "Add to favorites (improves recommendations)";
+    btn.setAttribute("aria-pressed", String(it.favorite));
+  };
+  btn.onclick = async () => {
+    it.favorite = !it.favorite;
+    draw();
+    try {
+      await api(`/api/items/${it.id}/favorite`, { method: "PUT", body: { favorite: it.favorite } });
+    } catch (e) {
+      it.favorite = !it.favorite;
+      draw();
+      alert(e.message);
+    }
+  };
+  draw();
+  return btn;
 }
 
 // ---------- player ----------

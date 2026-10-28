@@ -29,6 +29,7 @@ type Server struct {
 	scanner *scanner.Scanner
 	thumbs  *thumbnailer
 	hls     *hlsManager
+	recs    recCache
 }
 
 func New(database *sql.DB, cfg *config.Config, sc *scanner.Scanner) *Server {
@@ -43,6 +44,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/items/{id}", s.updateItem)
 	mux.HandleFunc("POST /api/items/{id}/progress", s.saveProgress)
 	mux.HandleFunc("GET /api/items/{id}/thumbnail", s.thumbnail)
+	mux.HandleFunc("GET /api/items/{id}/similar", s.similarItems)
+	mux.HandleFunc("PUT /api/items/{id}/favorite", s.setFavorite)
+	mux.HandleFunc("GET /api/recommendations", s.recommendations)
 	mux.HandleFunc("GET /api/tags", s.listTags)
 	mux.HandleFunc("GET /api/libraries", s.listLibraries)
 	mux.HandleFunc("POST /api/libraries", s.addLibrary)

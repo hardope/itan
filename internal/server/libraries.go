@@ -105,6 +105,7 @@ func (s *Server) updateLibrary(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.recs.invalidate() // folder_tags or default_kind may change what scans add
 	s.listLibraries(w, r)
 }
 
@@ -194,6 +195,7 @@ func (s *Server) deleteLibrary(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
+	s.recs.invalidate()
 	s.listLibraries(w, r)
 }
 

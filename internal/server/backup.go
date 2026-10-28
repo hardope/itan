@@ -67,6 +67,7 @@ func (s *Server) importLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rep, err := metadata.Import(r.Context(), s.db, lib, mode, q.Get("dry_run") == "1")
+	s.recs.invalidate()
 	if err != nil {
 		serverError(w, r, err)
 		return
