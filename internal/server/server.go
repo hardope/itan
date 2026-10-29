@@ -2,6 +2,7 @@
 package server
 
 import (
+	"bytes"
 	"database/sql"
 	"embed"
 	"encoding/json"
@@ -81,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 
 	static, _ := fs.Sub(webFS, "web")
 	files := http.FileServerFS(static)
+	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		// Embedded files have no modification time, so browsers would cache
 		// them by guesswork and keep old UI code after an upgrade.
@@ -93,6 +95,28 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	return logRequests(mux)
+}
+
+// index serves the page with this device's edit lock state on <html
+// data-auth="none|locked|unlocked">, so the header is right from the first
+// frame instead of changing once the UI has asked.
+func (s *Server) index(w http.ResponseWriter, r *http.Request) {
+	page, err := webFS.ReadFile("web/index.html")
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	state := "none"
+	if stored, err := s.storedPIN(r.Context()); err == nil && stored != "" {
+		state = "locked"
+		if ok, _ := s.unlocked(r); ok {
+			state = "unlocked"
+		}
+	}
+	page = bytes.Replace(page, []byte(`<html lang="en">`), []byte(`<html lang="en" data-auth="`+state+`">`), 1)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(page)
 }
 
 // LANURLs lists the URLs other devices on the local network can use.

@@ -979,7 +979,11 @@ dialog.confirm p { margin: 0 0 22px; color: var(--text-2); line-height: 1.55; }
 
 /* ---------- edit PIN ---------- */
 
-#lock-btn.unlocked { color: var(--accent-ink); }
+/* The server marks <html data-auth> with this device's lock state. */
+#lock-btn { display: none; }
+html[data-auth="locked"] #lock-btn, html[data-auth="unlocked"] #lock-btn { display: grid; }
+html[data-auth="locked"] #lock-btn .i-unlocked, html[data-auth="unlocked"] #lock-btn .i-locked { display: none; }
+html[data-auth="unlocked"] #lock-btn { color: var(--accent-ink); }
 .pin-dialog { text-align: center; }
 .pin-dialog form > p { margin-bottom: 18px; }
 .pin-icon {

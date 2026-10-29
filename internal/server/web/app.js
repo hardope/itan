@@ -226,17 +226,18 @@ function confirmDialog({ title, body, confirm = "OK", danger = false }) {
 // ---------- edit PIN ----------
 
 // Editing can be protected by a PIN (Settings). Watching never is.
-let auth = { pin_set: false, unlocked: true };
+// The server puts this device's state on <html data-auth>, so nothing has
+// to wait for /api/auth.
+const authAtLoad = document.documentElement.dataset.auth || "none";
+let auth = { pin_set: authAtLoad !== "none", unlocked: authAtLoad !== "locked" };
 let onAuthChange = null; // the current page's redraw when that changes
 const lockBtn = document.getElementById("lock-btn");
 
 function drawLock() {
-  lockBtn.hidden = !auth.pin_set;
-  lockBtn.replaceChildren(icon(auth.unlocked ? "unlock" : "lock"));
+  document.documentElement.dataset.auth = !auth.pin_set ? "none" : auth.unlocked ? "unlocked" : "locked";
   const label = auth.unlocked ? "Changes are unlocked on this device. Click to lock." : "Changes are locked. Click to enter the PIN.";
   lockBtn.title = label;
   lockBtn.setAttribute("aria-label", label);
-  lockBtn.classList.toggle("unlocked", auth.unlocked);
 }
 
 async function loadAuth() {
@@ -2098,7 +2099,11 @@ async function route() {
   if (!path.startsWith("/library") && document.activeElement !== searchBox) searchBox.value = "";
   document.title = APP_NAME;
   document.body.classList.add("loading");
-  if (!app.firstChild) app.replaceChildren(skeletonGrid(8));
+  // Placeholder cards only if the first page is slow; a quick load goes
+  // straight from blank to content without a flash in between.
+  const placeholder = !app.firstChild && setTimeout(() => {
+    if (!ctx.stale() && !app.firstChild) app.replaceChildren(skeletonGrid(8));
+  }, 300);
   try {
     const m = path.match(/^\/item\/(\d+)/);
     const sm = path.match(/^\/series\/(\d+)/);
@@ -2110,6 +2115,7 @@ async function route() {
   } catch (e) {
     if (!ctx.stale()) app.replaceChildren(errorState(e));
   } finally {
+    clearTimeout(placeholder);
     if (!ctx.stale()) {
       document.body.classList.remove("loading");
       window.scrollTo(0, memo ? memo.y : 0);
@@ -2156,4 +2162,5 @@ window.addEventListener("hashchange", route);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadAuth(); });
 // Closing or reloading the tab: save progress and stop any server-side stream.
 window.addEventListener("pagehide", () => { if (onLeave) { onLeave(); onLeave = null; } });
-loadAuth().finally(route);
+drawLock();
+route();
