@@ -59,6 +59,23 @@ folders from the ⚙ page in the web UI.
 | `-max-transcodes` | `ITAN_MAX_TRANSCODES` | `2` | Simultaneous transcodes, `0` to disable transcoding |
 | `-reset-pin` | | | Remove the edit PIN (if it's forgotten) and exit |
 
+## Libraries
+
+A library is a folder, added in ⚙ Settings, with a kind for the new videos
+found in it (Movie, Music video, Documentary…).
+
+A library can be inside another one. Say the whole drive is a library called
+*Main* with new videos marked Movie, and you add its `Music` folder as a
+library with new videos marked Music video. Main then skips that folder:
+videos in it are listed once, under Music, and new ones come in as music
+videos. Settings shows which library is inside which.
+
+Moving or renaming files is safe. A video is recognised by its content, so
+it keeps its title, tags, rating and watch progress wherever it goes, even
+into or out of a library inside another. Its old place is forgotten once the
+scan finds it somewhere else. Removing an inner library hands its folder back
+to the outer one on the next scan, edits intact.
+
 ## Series
 
 Episodes are grouped into series and seasons. Files named the usual ways
@@ -217,8 +234,9 @@ ways. Both are described in [docs/export-format.md](docs/export-format.md).
   the folder's root. Plug the drive into another computer running Itan
   and add the folder: the edits come along, even if the folder has another
   name there or some videos were renamed or re-encoded. Edits made on either
-  computer are merged the next time the other one scans. Watch history isn't
-  included. This needs write access to the folder, so it won't work with a
+  computer are merged the next time the other one scans. The file covers the
+  whole folder, including libraries inside it, so one file per drive is
+  enough. Watch history isn't included. This needs write access to the folder, so it won't work with a
   read-only (`:ro`) Docker mount. Older versions wrote one `.meta.json` per
   video; those are folded into `.itan.json` and removed when you turn the
   option on.

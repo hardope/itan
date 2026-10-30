@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/hardope/itan/internal/db"
 	"github.com/hardope/itan/internal/metadata"
 )
 
@@ -27,20 +29,43 @@ func newFolderWriter(database *sql.DB) *folderWriter {
 }
 
 // itemChanged schedules a write for each library that keeps a folder file
-// and has the item.
+// and has the item, in its folder or in a library inside it.
 func (fw *folderWriter) itemChanged(itemID int64) {
-	fw.scheduleWhere(`SELECT DISTINCT f.library_id FROM files f JOIN libraries l ON l.id = f.library_id
-		WHERE f.item_id = ? AND l.write_sidecars = 1`, itemID)
+	ctx := context.Background()
+	keep, err := fw.ids(ctx, `SELECT id FROM libraries WHERE write_sidecars = 1`)
+	if err != nil || len(keep) == 0 {
+		return
+	}
+	has, err := fw.ids(ctx, `SELECT DISTINCT library_id FROM files WHERE item_id = ?`, itemID)
+	if err != nil {
+		return
+	}
+	var ids []int64
+	for _, lib := range has {
+		around, err := db.ContainingLibraries(ctx, fw.db, lib)
+		if err != nil {
+			log.Printf("folder files: %v", err)
+			return
+		}
+		for _, id := range around {
+			if slices.Contains(keep, id) {
+				ids = append(ids, id)
+			}
+		}
+	}
+	fw.schedule(ids)
 }
 
 // allChanged schedules a write for every library that keeps one.
 func (fw *folderWriter) allChanged() {
-	fw.scheduleWhere(`SELECT id FROM libraries WHERE write_sidecars = 1`)
+	if ids, err := fw.ids(context.Background(), `SELECT id FROM libraries WHERE write_sidecars = 1`); err == nil {
+		fw.schedule(ids)
+	}
 }
 
-func (fw *folderWriter) scheduleWhere(query string, args ...any) {
+func (fw *folderWriter) ids(ctx context.Context, query string, args ...any) ([]int64, error) {
 	var ids []int64
-	err := eachRow(context.Background(), fw.db, query, args, func(rows *sql.Rows) error {
+	err := eachRow(ctx, fw.db, query, args, func(rows *sql.Rows) error {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
 			return err
@@ -50,8 +75,11 @@ func (fw *folderWriter) scheduleWhere(query string, args ...any) {
 	})
 	if err != nil {
 		log.Printf("folder files: %v", err)
-		return
 	}
+	return ids, err
+}
+
+func (fw *folderWriter) schedule(ids []int64) {
 	if len(ids) == 0 {
 		return
 	}

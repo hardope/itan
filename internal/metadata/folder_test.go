@@ -229,3 +229,39 @@ func TestFolderFileWriteKeepsOtherInstallsEdits(t *testing.T) {
 		t.Fatalf("file titles = %v", titles)
 	}
 }
+
+// A library inside the folder doesn't change the folder file: its videos
+// are in it with paths from the outer folder, and reading it finds them
+// there, with or without that library.
+func TestFolderFileCoversLibrariesInside(t *testing.T) {
+	root := t.TempDir()
+	music := filepath.Join(root, "Music")
+	a := openDB(t)
+	main := addLibrary(t, a, "Main", root)
+	exec(t, a, `UPDATE libraries SET write_sidecars = 1 WHERE id = ?`, main)
+	lib := addLibrary(t, a, "Music", music)
+	song := addItem(t, a, lib, "ph1:1111", 100, "song.mp4", "song")
+	setField(t, a, song, "title", "Zion", "user", 1000)
+	mustSync(t, a, main)
+	f := readFolder(t, root)
+	if len(f.Items) != 1 || f.Items[0].Paths[0].Path != "Music/song.mp4" {
+		t.Fatalf("folder file items = %+v", f.Items)
+	}
+
+	// Re-encoded copies (new hash) at the same place get the edit, whether
+	// the other install has a Music library or not.
+	b := openDB(t)
+	bMain := addLibrary(t, b, "Drive", root)
+	withLib := addItem(t, b, addLibrary(t, b, "Songs", music), "ph1:2222", 90, "song.mp4", "song")
+	mustSync(t, b, bMain)
+	if v, _ := field(t, b, withLib, "title"); v != "Zion" {
+		t.Errorf("with a Music library: title = %v", v)
+	}
+	c := openDB(t)
+	cMain := addLibrary(t, c, "Drive", root)
+	without := addItem(t, c, cMain, "ph1:3333", 80, filepath.Join("Music", "song.mp4"), "song")
+	mustSync(t, c, cMain)
+	if v, _ := field(t, c, without, "title"); v != "Zion" {
+		t.Errorf("without a Music library: title = %v", v)
+	}
+}

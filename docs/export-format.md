@@ -164,17 +164,23 @@ export) with these differences:
   everyone what you watched.
 - `paths` are relative to the folder. The library name in them is ignored
   when reading.
+- Videos in libraries inside the folder are included too, with paths
+  relative to this folder (`Music/song.mp4`). The file is the same whether or
+  not an install has libraries inside the folder.
 - `exported_at` is the time of the newest edit, not of writing, so a library
   with no new edits produces an identical file and it isn't rewritten.
 
 Rules:
 - Written when the library has `write_sidecars` enabled ("Keep edits in this
-  folder"), a couple of seconds after edits, and after imports and scans.
+  folder"), a couple of seconds after edits (to videos in the folder or in a
+  library inside it), and after imports and scans.
   Written atomically (temporary file, then rename).
-- Read during each scan if its size or modification time changed since this
-  install last read or wrote it, whether or not the library writes one. It is
-  imported with the merge rules below, matching within that library only:
-  hash and size, then path inside the folder, then file name and size. So a
+- Read during each scan if its contents changed since this install last read
+  or wrote it (FAT drives keep modification times to 2 seconds, so they
+  aren't used), whether or not the library writes one. It is imported with
+  the merge rules below, matching within that folder only, including
+  libraries inside it: hash and size, then path inside the folder, then file
+  name and size. So a
   drive can move between installs where the folder has different names, and
   edits made on each come together.
 - Adding a folder that already has a folder file turns on writing it, so it

@@ -1891,7 +1891,9 @@ function libCard(lib) {
   const remove = async () => {
     const ok = await confirmDialog({
       title: `Remove “${lib.name}”?`,
-      body: "Its videos disappear from the library. Files on disk are not touched, and your edits come back if you add the folder again.",
+      body: lib.inside
+        ? `Its videos go back to ${lib.inside} on the next check, keeping your edits. Files on disk are not touched.`
+        : "Its videos disappear from the library. Files on disk are not touched, and your edits come back if you add the folder again.",
       confirm: "Remove", danger: true,
     });
     if (!ok) return;
@@ -1906,13 +1908,29 @@ function libCard(lib) {
     h("div", { class: "lib-main" },
       h("div", { class: "lib-title" }, h("strong", {}, lib.name), h("span", { class: "lib-count" }, plural(lib.items, "video"))),
       h("div", { class: "lib-path" }, lib.path),
+      nesting(lib),
       h("div", { class: "lib-scanned" }, lib.last_scan_at ? `Checked ${relTime(lib.last_scan_at * 1000)}` : "Not checked yet"),
       h("div", { class: "lib-toggles" },
         toggle("folder_tags", "Tag videos by folder", "New videos get their folder names as tags, like Documentaries and Nature."),
-        toggle("write_sidecars", "Keep edits in this folder", `Saves your titles, tags and ratings in one hidden file, .itan.json, so they travel with the drive. Another ${APP_NAME} reads it when you add this folder.`),
+        toggle("write_sidecars", "Keep edits in this folder", lib.inside_keeps_file
+          ? `${lib.inside}'s .itan.json already saves the edits for this folder. Turn this on to keep a copy here as well.`
+          : `Saves your titles, tags and ratings in one hidden file, .itan.json, so they travel with the drive. Another ${APP_NAME} reads it when you add this folder.`),
         h("div", { class: "toolbar" }, h("span", { class: "hint" }, "New videos here are"), kind))),
     h("div", { class: "lib-actions" }, h("button", { class: "btn btn-danger btn-sm", onclick: remove }, icon("trash"), "Remove")));
 }
+
+// A library inside another one has that folder to itself.
+function nesting(lib) {
+  const lines = [
+    lib.inside && `Inside ${lib.inside}, which skips this folder.`,
+    lib.contains?.length && (lib.contains.length > 1
+      ? `${listNames(lib.contains)} are libraries of their own.`
+      : `${lib.contains[0]} is a library of its own.`),
+  ].filter(Boolean);
+  return lines.length ? h("div", { class: "lib-nesting" }, icon("stack"), lines.join(" ")) : null;
+}
+
+const listNames = (names) => names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
 
 function addFolderForm(onAdded) {
   const path = h("input", { class: "input", placeholder: "/Users/you/Movies", autocomplete: "off", spellcheck: "false" });

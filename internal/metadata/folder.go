@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,10 +23,11 @@ import (
 
 // The folder file is one hidden file at a library's root that holds the
 // edits for the videos in that folder, so they travel with the drive. It is
-// a library export (same format, importable by hand) limited to that
-// library's edited videos, without watch history. Paths in it are relative
-// to the folder, and reading it matches videos within that folder only, so
-// the library can have a different name on every machine.
+// a library export (same format, importable by hand) limited to the edited
+// videos in the folder, without watch history. Paths in it are relative to
+// the folder, and reading it matches videos within that folder only, so
+// the library can have a different name on every machine. Libraries inside
+// the folder are covered too: the file is the same with or without them.
 //
 // It replaces the per-video .meta.json sidecars of earlier versions: those
 // are still read for new files, and folded into the folder file (then
@@ -71,27 +73,43 @@ func BuildFolderFile(ctx context.Context, q db.Execer, libraryID int64) (*Librar
 }
 
 func buildFolderFile(ctx context.Context, q db.Execer, fl folderLib) (*Library, error) {
-	paths := map[int64]string{}
-	var ids []int64
-	err := eachRow(ctx, q, `
-		SELECT f.item_id, f.rel_path FROM files f
-		 WHERE f.library_id = ? AND f.missing_since IS NULL
-		   AND (EXISTS (SELECT 1 FROM item_field_sources s WHERE s.item_id = f.item_id AND s.source = 'user')
-		     OR EXISTS (SELECT 1 FROM item_tags t WHERE t.item_id = f.item_id AND (t.source = 'user' OR t.removed = 1)))
-		 ORDER BY f.rel_path`, []any{fl.id}, func(r *sql.Rows) error {
-		var id int64
-		var rel string
-		if err := r.Scan(&id, &rel); err != nil {
-			return err
-		}
-		if _, dup := paths[id]; !dup {
-			ids = append(ids, id)
-		}
-		paths[id] = filepath.ToSlash(rel)
-		return nil
-	})
+	nested, err := db.NestedLibraries(ctx, q, fl.id)
 	if err != nil {
 		return nil, err
+	}
+	type file struct {
+		id   int64
+		path string
+	}
+	var files []file
+	for _, lib := range append([]db.Nested{{ID: fl.id}}, nested...) {
+		err := eachRow(ctx, q, `
+			SELECT f.item_id, f.rel_path FROM files f
+			 WHERE f.library_id = ? AND f.missing_since IS NULL
+			   AND (EXISTS (SELECT 1 FROM item_field_sources s WHERE s.item_id = f.item_id AND s.source = 'user')
+			     OR EXISTS (SELECT 1 FROM item_tags t WHERE t.item_id = f.item_id AND (t.source = 'user' OR t.removed = 1)))`,
+			[]any{lib.ID}, func(r *sql.Rows) error {
+				var f file
+				var rel string
+				if err := r.Scan(&f.id, &rel); err != nil {
+					return err
+				}
+				f.path = filepath.ToSlash(filepath.Join(lib.Rel, rel))
+				files = append(files, f)
+				return nil
+			})
+		if err != nil {
+			return nil, err
+		}
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
+	paths := map[int64]string{}
+	var ids []int64
+	for _, f := range files {
+		if _, dup := paths[f.id]; !dup {
+			ids = append(ids, f.id)
+			paths[f.id] = f.path
+		}
 	}
 
 	items, itemIDs, err := loadItems(ctx, q, ids)

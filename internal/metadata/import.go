@@ -90,8 +90,9 @@ func Import(ctx context.Context, database *sql.DB, lib *Library, mode string, dr
 type importOptions struct {
 	mode   string
 	dryRun bool
-	// libraryID > 0 matches paths within that library only, ignoring the
-	// library names in the file (a folder file's paths are folder-relative).
+	// libraryID > 0 matches paths within that library's folder only,
+	// including libraries inside it, ignoring the library names in the
+	// file (a folder file's paths are folder-relative).
 	libraryID int64
 }
 
@@ -109,7 +110,13 @@ func importWith(ctx context.Context, database *sql.DB, lib *Library, opts import
 	defer tx.Rollback() // no-op after Commit
 
 	im := newImporter(ctx, tx, mode, rep, lib.Tags)
-	im.libraryID = opts.libraryID
+	if opts.libraryID > 0 {
+		nested, err := db.NestedLibraries(ctx, tx, opts.libraryID)
+		if err != nil {
+			return nil, err
+		}
+		im.folder = append([]db.Nested{{ID: opts.libraryID}}, nested...)
+	}
 	if err := im.ensureTagDefs(); err != nil {
 		return nil, err
 	}
@@ -260,14 +267,14 @@ func ApplySidecar(ctx context.Context, database *sql.DB, itemID int64, sidecarPa
 // ---- importer ----
 
 type importer struct {
-	ctx       context.Context
-	tx        *sql.Tx
-	mode      string
-	rep       *Report
-	defs      map[string]TagDef
-	order     []string
-	tagIDs    map[string]int64
-	libraryID int64 // see importOptions
+	ctx    context.Context
+	tx     *sql.Tx
+	mode   string
+	rep    *Report
+	defs   map[string]TagDef
+	order  []string
+	tagIDs map[string]int64
+	folder []db.Nested // see importOptions.libraryID; the library itself has Rel ""
 }
 
 func newImporter(ctx context.Context, tx *sql.Tx, mode string, rep *Report, defs []TagDef) *importer {
@@ -392,7 +399,7 @@ func (im *importer) defsFor(it Item) []TagDef {
 
 // match finds the local item for an exported one: by hash and size, then by
 // library name and path, then by file name and size (if unambiguous). With
-// a libraryID, paths and names are looked up in that library only.
+// a libraryID, paths and names are looked up in that library's folder only.
 func (im *importer) match(it Item) (int64, string, error) {
 	var id int64
 	err := im.tx.QueryRowContext(im.ctx,
@@ -405,9 +412,8 @@ func (im *importer) match(it Item) (int64, string, error) {
 	}
 	for _, p := range it.Paths {
 		var err error
-		if im.libraryID > 0 {
-			err = im.tx.QueryRowContext(im.ctx, `SELECT item_id FROM files WHERE library_id = ? AND rel_path = ? LIMIT 1`,
-				im.libraryID, filepath.FromSlash(p.Path)).Scan(&id)
+		if im.folder != nil {
+			id, err = im.matchInFolder(filepath.FromSlash(p.Path))
 		} else {
 			err = im.tx.QueryRowContext(im.ctx, `
 				SELECT f.item_id FROM files f JOIN libraries l ON l.id = f.library_id
@@ -424,8 +430,12 @@ func (im *importer) match(it Item) (int64, string, error) {
 		name := path.Base(p.Path)
 		var ids []int64
 		scope, args := "", []any{it.Size, name, "%/" + escapeLike(name)}
-		if im.libraryID > 0 {
-			scope, args = " AND library_id = ?", append(args, im.libraryID)
+		if im.folder != nil {
+			ids := make([]int64, len(im.folder))
+			for i, f := range im.folder {
+				ids[i] = f.ID
+			}
+			scope = " AND library_id IN (" + idList(ids) + ")"
 		}
 		err := eachRow(im.ctx, im.tx, `
 			SELECT DISTINCT item_id FROM files
@@ -446,6 +456,27 @@ func (im *importer) match(it Item) (int64, string, error) {
 		}
 	}
 	return 0, "", nil
+}
+
+// matchInFolder finds the file at rel in the folder, which may be in a
+// library inside it.
+func (im *importer) matchInFolder(rel string) (int64, error) {
+	for _, f := range im.folder {
+		inner, ok := rel, f.Rel == ""
+		if !ok {
+			inner, ok = db.Within(f.Rel, rel)
+		}
+		if !ok {
+			continue
+		}
+		var id int64
+		err := im.tx.QueryRowContext(im.ctx, `SELECT item_id FROM files WHERE library_id = ? AND rel_path = ? LIMIT 1`,
+			f.ID, inner).Scan(&id)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return id, err
+		}
+	}
+	return 0, sql.ErrNoRows
 }
 
 func (im *importer) storePending(p pendingPayload) error {

@@ -82,7 +82,8 @@ type library struct {
 	folderTags  bool
 }
 
-// Scan scans every enabled library. Only one scan runs at a time.
+// Scan scans every enabled library, those inside other libraries first.
+// Only one scan runs at a time.
 func (s *Scanner) Scan(ctx context.Context) error {
 	s.mu.Lock()
 	if s.status.Running {
@@ -107,6 +108,11 @@ func (s *Scanner) Scan(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	if n, err := s.forgetMoved(ctx); err != nil {
+		s.addError("%v", err)
+	} else if n > 0 {
+		log.Printf("scan: forgot %d old places of moved or renamed files", n)
+	}
 	s.retryProbes(ctx)
 	st := s.Status()
 	log.Printf("scan: done in %s: %d files, %d new, %d missing, %d errors",
@@ -116,7 +122,8 @@ func (s *Scanner) Scan(ctx context.Context) error {
 
 func (s *Scanner) libraries(ctx context.Context) ([]library, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, root_path, default_kind, folder_tags FROM libraries WHERE enabled = 1`)
+		`SELECT id, name, root_path, default_kind, folder_tags FROM libraries WHERE enabled = 1
+		  ORDER BY length(root_path) DESC, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +146,21 @@ func (s *Scanner) scanLibrary(ctx context.Context, lib library) error {
 	}
 	started := time.Now().Unix()
 
-	err := filepath.WalkDir(lib.root, func(path string, d fs.DirEntry, err error) error {
+	// Folders that are libraries of their own are scanned there.
+	nested, err := db.NestedLibraries(ctx, s.db, lib.id)
+	if err != nil {
+		return err
+	}
+	ownLibrary := func(path string) bool {
+		for _, n := range nested {
+			if db.SamePath(path, filepath.Join(lib.root, n.Rel)) {
+				return true
+			}
+		}
+		return false
+	}
+
+	err = filepath.WalkDir(lib.root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			s.addError("%s: %v", path, err)
 			return nil
@@ -153,6 +174,9 @@ func (s *Scanner) scanLibrary(ctx context.Context, lib library) error {
 			}
 			return nil
 		}
+		if d.IsDir() && path != lib.root && ownLibrary(path) {
+			return filepath.SkipDir
+		}
 		if d.IsDir() || !videoExts[strings.ToLower(filepath.Ext(path))] {
 			return nil
 		}
@@ -165,6 +189,11 @@ func (s *Scanner) scanLibrary(ctx context.Context, lib library) error {
 	})
 	if err != nil {
 		return err
+	}
+	if n, err := s.handOver(ctx, lib, nested); err != nil {
+		return err
+	} else if n > 0 {
+		log.Printf("scan: %s: %d files are now in libraries of their own", lib.name, n)
 	}
 
 	res, err := s.db.ExecContext(ctx, `
@@ -197,6 +226,58 @@ func (s *Scanner) scanLibrary(ctx context.Context, lib library) error {
 	}
 	_, err = s.db.ExecContext(ctx, `UPDATE libraries SET last_scan_at = ? WHERE id = ?`, time.Now().Unix(), lib.id)
 	return err
+}
+
+// forgetMoved drops the old places of files that were moved or renamed:
+// missing files whose video is still there somewhere else.
+func (s *Scanner) forgetMoved(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM files WHERE missing_since IS NOT NULL
+		   AND EXISTS (SELECT 1 FROM files o WHERE o.item_id = files.item_id AND o.missing_since IS NULL)`)
+	if err != nil {
+		return 0, fmt.Errorf("forget moved files: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// handOver forgets a library's files that are inside libraries of its own:
+// those libraries have them (they're scanned first), under the same items.
+func (s *Scanner) handOver(ctx context.Context, lib library, nested []db.Nested) (int, error) {
+	if len(nested) == 0 {
+		return 0, nil
+	}
+	var ids []int64
+	rows, err := s.db.QueryContext(ctx, `SELECT id, rel_path FROM files WHERE library_id = ?`, lib.id)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var id int64
+		var rel string
+		if err := rows.Scan(&id, &rel); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		for _, n := range nested {
+			if _, ok := db.Within(n.Rel, rel); ok {
+				ids = append(ids, id)
+				break
+			}
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(ids) == 0 {
+		return 0, err
+	}
+	err = db.Tx(ctx, s.db, func(tx *sql.Tx) error {
+		for _, id := range ids {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return len(ids), err
 }
 
 func (s *Scanner) scanFile(ctx context.Context, lib library, path, rel string, d fs.DirEntry) error {

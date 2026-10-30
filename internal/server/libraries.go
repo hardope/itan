@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/hardope/itan/internal/db"
 	"github.com/hardope/itan/internal/metadata"
 	"github.com/hardope/itan/internal/scanner"
 )
@@ -27,6 +28,11 @@ type libraryJSON struct {
 	WriteSidecars bool   `json:"write_sidecars"`
 	Items         int    `json:"items"`
 	LastScanAt    *int64 `json:"last_scan_at"`
+	// Inside names the library whose folder this one is in (the closest),
+	// which then skips this folder; Contains names libraries inside this one.
+	Inside     string   `json:"inside,omitempty"`
+	InsideKeep bool     `json:"inside_keeps_file,omitempty"` // a library around it keeps a folder file, which covers this one
+	Contains   []string `json:"contains,omitempty"`
 }
 
 func (s *Server) listLibraries(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +52,21 @@ func (s *Server) listLibraries(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		serverError(w, r, err)
 		return
+	}
+	for i := range libs {
+		var inside *libraryJSON
+		for j := range libs {
+			if _, ok := db.Within(libs[j].Path, libs[i].Path); ok {
+				libs[i].InsideKeep = libs[i].InsideKeep || libs[j].WriteSidecars
+				if inside == nil || len(libs[j].Path) > len(inside.Path) {
+					inside = &libs[j]
+				}
+			}
+		}
+		if inside != nil {
+			libs[i].Inside = inside.Name
+			inside.Contains = append(inside.Contains, libs[i].Name)
+		}
 	}
 	writeJSON(w, http.StatusOK, libs)
 }
@@ -118,7 +139,8 @@ func (s *Server) updateLibrary(w http.ResponseWriter, r *http.Request) {
 	s.listLibraries(w, r)
 }
 
-// addLibrary registers a folder and starts a scan. Body:
+// addLibrary registers a folder and starts a scan. The folder can be inside
+// another library's (see db.NestedLibraries). Body:
 //
 //	{"name": "Documentaries", "path": "/media/docs", "default_kind": "documentary"}
 func (s *Server) addLibrary(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +163,23 @@ func (s *Server) addLibrary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "path is not a readable folder on the server")
 		return
 	}
+	var taken bool
+	err := eachRow(r.Context(), s.db, `SELECT root_path FROM libraries`, nil, func(rows *sql.Rows) error {
+		var root string
+		if err := rows.Scan(&root); err != nil {
+			return err
+		}
+		taken = taken || db.SamePath(root, body.Path)
+		return nil
+	})
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if taken {
+		writeError(w, http.StatusConflict, "that folder is already a library")
+		return
+	}
 	if strings.TrimSpace(body.Name) == "" {
 		body.Name = filepath.Base(body.Path)
 	}
@@ -150,7 +189,7 @@ func (s *Server) addLibrary(w http.ResponseWriter, r *http.Request) {
 	// A folder that already has a folder file (the drive was used with
 	// another install) keeps it up to date here too.
 	_, statErr := os.Stat(filepath.Join(body.Path, metadata.FolderFileName))
-	_, err := s.db.ExecContext(r.Context(),
+	_, err = s.db.ExecContext(r.Context(),
 		`INSERT INTO libraries(name, root_path, default_kind, write_sidecars) VALUES (?, ?, ?, ?)`,
 		strings.TrimSpace(body.Name), body.Path, body.DefaultKind, statErr == nil)
 	if err != nil {
