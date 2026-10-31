@@ -297,3 +297,14 @@ docs/                  metadata export format spec
 - External subtitles (SRT → WebVTT)
 - "Not interested" on recommendations; detecting multi-part films ("Part 1", "Part 2")
 - mDNS (`itan.local`), installable PWA, multiple profiles
+
+## License
+
+Copyright (C) 2026 Opeoluwa Adeyeri
+
+Itan is free software under the [GNU Affero General Public License, version 3](LICENSE).
+You can use, change and share it. If you change it and let others use your
+version over a network, you must offer them its source code too.
+
+The web UI bundles [hls.js](https://github.com/video-dev/hls.js), which is
+under the Apache License 2.0 ([its license](internal/server/web/vendor/hls.js.LICENSE)).
