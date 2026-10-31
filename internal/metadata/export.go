@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -160,6 +161,7 @@ func loadItems(ctx context.Context, q db.Execer, ids []int64) ([]Item, []int64, 
 		if err := r.Scan(&id, &p.Library, &p.Path); err != nil {
 			return err
 		}
+		p.Path = filepath.ToSlash(p.Path) // the file format uses /, like URLs
 		if it := byID[id]; it != nil {
 			it.Paths = append(it.Paths, p)
 		}

@@ -51,7 +51,8 @@ func addItem(t *testing.T, d *sql.DB, libID int64, hash string, size int64, rel,
 		t.Fatal(err)
 	}
 	exec(t, d, `INSERT INTO item_field_sources(item_id, field, source) VALUES (?, 'title', 'filename')`, id)
-	exec(t, d, `INSERT INTO files(item_id, library_id, rel_path, size_bytes, mtime) VALUES (?, ?, ?, ?, 0)`, id, libID, rel, size)
+	// Stored like the scanner does, with the OS separator.
+	exec(t, d, `INSERT INTO files(item_id, library_id, rel_path, size_bytes, mtime) VALUES (?, ?, ?, ?, 0)`, id, libID, filepath.FromSlash(rel), size)
 	return id
 }
 

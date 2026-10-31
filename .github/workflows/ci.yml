@@ -34,7 +34,16 @@ jobs:
           unformatted=$(gofmt -l cmd internal)
           if [ -n "$unformatted" ]; then echo "Run gofmt -w on:"; echo "$unformatted"; exit 1; fi
       - run: go vet ./...
-      - run: go test ./...
+      - name: go test
+        shell: bash
+        run: |
+          go test ./... 2>&1 | tee test.log || {
+            # Repeat the failures as annotations: they show on the commit
+            # page, where reading them doesn't need the full log.
+            grep -E -e '--- FAIL|_test\.go:[0-9]+:|^panic:' test.log | head -10 |
+              sed -e 's/%/%25/g' -e 's/^/::error::/'
+            exit 1
+          }
 
   release-build:
     name: Release downloads

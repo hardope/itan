@@ -83,7 +83,7 @@ Namespaces: `genre`, `tag`, `person`, `mood`, `source`.
 {
   "hash": "ph1:9f2c4e1ab03d7781",
   "size": 1843204096,
-  "paths": [                                   // hints only, for fallback matching
+  "paths": [                                   // hints only, for fallback matching; "/" between folders on every system
     { "library": "Documentaries", "path": "Nature/Planet Earth II - Islands (2016).mkv" }
   ],
 

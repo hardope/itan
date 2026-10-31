@@ -417,7 +417,7 @@ func (im *importer) match(it Item) (int64, string, error) {
 		} else {
 			err = im.tx.QueryRowContext(im.ctx, `
 				SELECT f.item_id FROM files f JOIN libraries l ON l.id = f.library_id
-				 WHERE l.name = ? AND f.rel_path = ? LIMIT 1`, p.Library, p.Path).Scan(&id)
+				 WHERE l.name = ? AND f.rel_path = ? LIMIT 1`, p.Library, filepath.FromSlash(p.Path)).Scan(&id)
 		}
 		if err == nil {
 			return id, "path", nil
@@ -429,7 +429,8 @@ func (im *importer) match(it Item) (int64, string, error) {
 	for _, p := range it.Paths {
 		name := path.Base(p.Path)
 		var ids []int64
-		scope, args := "", []any{it.Size, name, "%/" + escapeLike(name)}
+		// Stored paths use the OS separator (\ on Windows).
+		scope, args := "", []any{it.Size, name, "%" + escapeLike(string(filepath.Separator)+name)}
 		if im.folder != nil {
 			ids := make([]int64, len(im.folder))
 			for i, f := range im.folder {
