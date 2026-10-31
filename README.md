@@ -5,6 +5,8 @@
 A lightweight, self-hosted video library for the files you already have.
 Point it at your folders and watch on any device on your Wi-Fi.
 
+![Itan's home page: continue watching, with the film you were watching up front](docs/screenshots/home.png)
+
 - **Any folder layout.** No naming rules. Subfolder names become tags.
 - **Tag-first.** Genres and tags are how you browse; filter by several at
   once, including "not this tag".
@@ -16,6 +18,11 @@ Point it at your folders and watch on any device on your Wi-Fi.
   watch history. Nothing leaves the server.
 - **One small binary** with SQLite and the web UI built in. ffmpeg is optional
   but recommended.
+
+<p>
+  <img src="docs/screenshots/player.png" width="49%" alt="Watching a documentary, with similar videos alongside">
+  <img src="docs/screenshots/settings.png" width="49%" alt="Settings: a Music library inside the Main one, with keep-edits and folder tags turned on">
+</p>
 
 > Status: early MVP. MP4/WebM files play directly. MKV files, and files with
 > audio browsers can't play (DTS, AC3), are remuxed on the fly. Video a
@@ -312,7 +319,7 @@ internal/metadata/     export, import, folder files, pending imports
 internal/recommend/    recommendations: feature vectors, taste, diversity
 internal/server/       HTTP API, streaming, thumbnails
 internal/server/web/   web UI (plain HTML/CSS/JS, embedded in the binary)
-docs/                  metadata export format spec
+docs/                  metadata export format spec, README screenshots
 ```
 
 ## Roadmap
