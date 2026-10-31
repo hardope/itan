@@ -1,6 +1,8 @@
 services:
   itan:
-    build: .
+    image: ghcr.io/hardope/itan:latest
+    # Or build it from this folder instead:
+    # build: .
     container_name: itan
     ports:
       - "8080:8080"

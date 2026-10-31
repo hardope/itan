@@ -1,0 +1,70 @@
+# GoReleaser builds the downloads for a release: one archive per platform
+# plus checksums, attached to the GitHub release. It runs when a v* tag is
+# pushed (.github/workflows/release.yml). Try it locally with:
+#   goreleaser release --snapshot --clean
+version: 2
+
+project_name: itan
+
+builds:
+  - main: ./cmd/itan
+    binary: itan
+    env:
+      - CGO_ENABLED=0 # pure Go SQLite: static binaries, no C toolchain per platform
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64, arm]
+    goarm: ["7"]
+    ignore:
+      - goos: darwin
+        goarch: arm
+      - goos: windows
+        goarch: arm
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    # itan_0.1.0_macos_arm64.tar.gz, itan_0.1.0_linux_armv7.tar.gz, ...
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "darwin" }}macos{{ else }}{{ .Os }}{{ end }}_
+      {{- .Arch }}{{ with .Arm }}v{{ . }}{{ end }}
+    wrap_in_directory: true
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  sort: asc
+
+release:
+  prerelease: auto
+  footer: |
+    ## Which download?
+
+    | Computer | File |
+    |---|---|
+    | Mac with Apple Silicon (M1 or later) | `macos_arm64` |
+    | Mac with an Intel processor | `macos_amd64` |
+    | Windows PC | `windows_amd64` (`windows_arm64` for Snapdragon laptops) |
+    | Linux PC or server | `linux_amd64` |
+    | Raspberry Pi 4 or 5, or an ARM NAS, with a 64-bit OS | `linux_arm64` |
+    | Raspberry Pi with 32-bit Raspberry Pi OS | `linux_armv7` |
+
+    Install [ffmpeg](https://ffmpeg.org/download.html) too, for thumbnails and for videos browsers can't play as they are.
+
+    **Docker** (amd64, arm64, armv7; ffmpeg included): `docker pull ghcr.io/hardope/itan:{{ .Version }}`
+
+    See the [README](https://github.com/hardope/itan#readme) to get started.

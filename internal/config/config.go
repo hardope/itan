@@ -32,6 +32,10 @@ type Config struct {
 	Libraries []Library
 	// ResetPIN removes the edit PIN and exits, for when it's forgotten.
 	ResetPIN bool
+	// ShowVersion prints the version and exits.
+	ShowVersion bool
+	// Version of this build, set by main (not a flag).
+	Version string
 }
 
 // Load parses flags, falling back to ITAN_* environment variables.
@@ -48,6 +52,7 @@ func Load() (*Config, error) {
 	flag.IntVar(&c.MaxTranscodes, "max-transcodes", envInt("ITAN_MAX_TRANSCODES", 2), "simultaneous transcodes (0 = disable transcoding)")
 	flag.StringVar(&libs, "libraries", env("ITAN_LIBRARIES", ""), `libraries to register, "Name=/path;Other=/path2"`)
 	flag.BoolVar(&c.ResetPIN, "reset-pin", false, "remove the edit PIN (if it's forgotten) and exit")
+	flag.BoolVar(&c.ShowVersion, "version", false, "print the version and exit")
 	flag.Parse()
 
 	switch c.HWAccel {

@@ -1790,7 +1790,9 @@ async function renderSettings(ctx) {
       addFolderForm(() => route())),
     pinSection(),
     info.lan_urls.length && devicesSection(info.lan_urls),
-    backupSection()));
+    backupSection(),
+    info.version && h("p", { class: "settings-foot" }, `${APP_NAME} ${info.version} · `,
+      h("a", { href: info.source, target: "_blank", rel: "noopener" }, "Source code"))));
   onAuthChange = () => route();
   pollScan(scanBox, scanBtn);
 }

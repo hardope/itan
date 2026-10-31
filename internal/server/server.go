@@ -26,6 +26,10 @@ var webFS embed.FS
 // profileID is the single built-in profile until multi-profile support lands.
 const profileID = 1
 
+// SourceURL is where Itan's source code is. The AGPL asks anyone running a
+// changed version for others to offer its source: point this at yours.
+const SourceURL = "https://github.com/hardope/itan"
+
 type Server struct {
 	db      *sql.DB
 	cfg     *config.Config
@@ -135,13 +139,14 @@ func LANURLs(addr string) []string {
 	return urls
 }
 
-// info tells the UI how other devices can reach this server.
+// info tells the UI how other devices can reach this server, and which
+// version it is.
 func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	urls := LANURLs(s.cfg.Addr)
 	if urls == nil {
 		urls = []string{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"lan_urls": urls})
+	writeJSON(w, http.StatusOK, map[string]any{"lan_urls": urls, "version": s.cfg.Version, "source": SourceURL})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

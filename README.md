@@ -22,9 +22,32 @@ Point it at your folders and watch on any device on your Wi-Fi.
 > browser can't decode (HEVC on most browsers, XviD, VC-1, ...) is transcoded
 > to H.264, using a hardware encoder when one is available.
 
+## Download
+
+Get the file for your computer from the
+[latest release](https://github.com/hardope/itan/releases/latest) (the
+release page says which one to pick), unpack it, and start it from a
+terminal in that folder:
+
+```bash
+./itan -libraries "Videos=$HOME/Videos"
+```
+
+Install [ffmpeg](https://ffmpeg.org/download.html) as well, for thumbnails
+and for videos browsers can't play as they are.
+
+The downloads aren't signed yet, so the first run needs one extra step:
+
+- **macOS** blocks files downloaded in a browser. Unblock it once with
+  `xattr -d com.apple.quarantine itan`.
+- **Windows** may show "Windows protected your PC". Click *More info*, then
+  *Run anyway*.
+
 ## Run with Docker
 
-Edit the video folder paths in `docker-compose.yml`, then:
+The image `ghcr.io/hardope/itan` includes ffmpeg and runs on amd64, arm64
+and 32-bit ARM (armv7, such as Raspberry Pi OS). Edit the video folder paths
+in `docker-compose.yml`, then:
 
 ```bash
 docker compose up -d
@@ -58,6 +81,7 @@ folders from the ⚙ page in the web UI.
 | `-hwaccel` | `ITAN_HWACCEL` | `auto` | Transcoding encoder: `auto`, `none` (software), `videotoolbox`, `vaapi`, `nvenc` |
 | `-max-transcodes` | `ITAN_MAX_TRANSCODES` | `2` | Simultaneous transcodes, `0` to disable transcoding |
 | `-reset-pin` | | | Remove the edit PIN (if it's forgotten) and exit |
+| `-version` | | | Print the version and exit |
 
 ## Libraries
 
@@ -297,6 +321,21 @@ docs/                  metadata export format spec
 - External subtitles (SRT → WebVTT)
 - "Not interested" on recommendations; detecting multi-part films ("Part 1", "Part 2")
 - mDNS (`itan.local`), installable PWA, multiple profiles
+
+## Releases
+
+Pushing a version tag publishes a release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+GitHub Actions then puts the downloads for each platform on the release page
+([.goreleaser.yaml](.goreleaser.yaml)) and the Docker image on
+`ghcr.io/hardope/itan`. Tags like `v0.2.0-rc.1` become pre-releases. Every
+push to `main` runs the tests on Linux, macOS and Windows and checks that
+both still build.
 
 ## License
 

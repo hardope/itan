@@ -1,14 +1,20 @@
 # ---- build ----
-FROM golang:1.26-alpine AS build
+# Runs on the build machine and cross-compiles for the target, so multi-arch
+# images don't compile Go under emulation.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
+ARG TARGETOS TARGETARCH TARGETVARIANT
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 # Pure Go SQLite driver: no cgo, fully static binary.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/itan ./cmd/itan
+RUN if [ "$TARGETARCH" = arm ]; then export GOARM="${TARGETVARIANT#v}"; fi \
+ && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /out/itan ./cmd/itan
 
 # ---- runtime ----
-FROM alpine:3.20
+FROM alpine:3.24
 # mesa-va-gallium / intel-media-driver: VAAPI drivers for hardware transcoding
 # on AMD / Intel GPUs (used only if /dev/dri is passed through).
 RUN apk add --no-cache ffmpeg tzdata mesa-va-gallium \

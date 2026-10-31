@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +20,9 @@ import (
 	"github.com/hardope/itan/internal/scanner"
 	"github.com/hardope/itan/internal/server"
 )
+
+// version is set by release builds: -ldflags "-X main.version=0.1.0".
+var version = "dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -29,6 +34,11 @@ func run() error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
+	}
+	cfg.Version = buildVersion()
+	if cfg.ShowVersion {
+		fmt.Println("itan", cfg.Version)
+		return nil
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return err
@@ -73,12 +83,24 @@ func run() error {
 		srv.Shutdown(shutdown)
 	}()
 
-	log.Printf("itan: data in %s", cfg.DataDir)
+	log.Printf("itan %s: data in %s", cfg.Version, cfg.DataDir)
 	logAddresses(cfg.Addr)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// buildVersion is the release version, or for other builds the one Go
+// records from the module (go install ...@v0.1.0) or the git checkout.
+func buildVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return strings.TrimPrefix(bi.Main.Version, "v")
+	}
+	return version
 }
 
 // seed creates the default profile and any libraries given on the command line.
