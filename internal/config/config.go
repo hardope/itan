@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -38,37 +39,88 @@ type Config struct {
 	Version string
 }
 
-// Load parses flags, falling back to ITAN_* environment variables.
-func Load() (*Config, error) {
-	c := &Config{}
-	var libs string
+// Defaults returns the settings used when no flags are given, taking
+// ITAN_* environment variables into account.
+func Defaults() *Config {
+	c := &Config{
+		Addr:          env("ITAN_ADDR", ":8080"),
+		DataDir:       env("ITAN_DATA", defaultDataDir()),
+		ScanInterval:  envDuration("ITAN_SCAN_INTERVAL", 30*time.Minute),
+		FFprobe:       env("ITAN_FFPROBE", "ffprobe"),
+		FFmpeg:        env("ITAN_FFMPEG", "ffmpeg"),
+		HWAccel:       env("ITAN_HWACCEL", "auto"),
+		MaxTranscodes: envInt("ITAN_MAX_TRANSCODES", 2),
+	}
+	return c
+}
 
-	flag.StringVar(&c.Addr, "addr", env("ITAN_ADDR", ":8080"), "listen address")
-	flag.StringVar(&c.DataDir, "data", env("ITAN_DATA", "./data"), "data directory")
-	flag.DurationVar(&c.ScanInterval, "scan-interval", envDuration("ITAN_SCAN_INTERVAL", 30*time.Minute), "periodic rescan interval (0 = off)")
-	flag.StringVar(&c.FFprobe, "ffprobe", env("ITAN_FFPROBE", "ffprobe"), "ffprobe binary")
-	flag.StringVar(&c.FFmpeg, "ffmpeg", env("ITAN_FFMPEG", "ffmpeg"), "ffmpeg binary")
-	flag.StringVar(&c.HWAccel, "hwaccel", env("ITAN_HWACCEL", "auto"), "transcoding encoder: auto, none, videotoolbox, vaapi, nvenc")
-	flag.IntVar(&c.MaxTranscodes, "max-transcodes", envInt("ITAN_MAX_TRANSCODES", 2), "simultaneous transcodes (0 = disable transcoding)")
-	flag.StringVar(&libs, "libraries", env("ITAN_LIBRARIES", ""), `libraries to register, "Name=/path;Other=/path2"`)
+// Load parses flags over the defaults.
+func Load() (*Config, error) {
+	c := Defaults()
+	libs := env("ITAN_LIBRARIES", "")
+
+	flag.StringVar(&c.Addr, "addr", c.Addr, "listen address")
+	flag.StringVar(&c.DataDir, "data", c.DataDir, "data directory: database and thumbnails")
+	flag.DurationVar(&c.ScanInterval, "scan-interval", c.ScanInterval, "periodic rescan interval (0 = off)")
+	flag.StringVar(&c.FFprobe, "ffprobe", c.FFprobe, "ffprobe binary")
+	flag.StringVar(&c.FFmpeg, "ffmpeg", c.FFmpeg, "ffmpeg binary")
+	flag.StringVar(&c.HWAccel, "hwaccel", c.HWAccel, "transcoding encoder: auto, none, videotoolbox, vaapi, nvenc")
+	flag.IntVar(&c.MaxTranscodes, "max-transcodes", c.MaxTranscodes, "simultaneous transcodes (0 = disable transcoding)")
+	flag.StringVar(&libs, "libraries", libs, `libraries to register, "Name=/path;Other=/path2"`)
 	flag.BoolVar(&c.ResetPIN, "reset-pin", false, "remove the edit PIN (if it's forgotten) and exit")
 	flag.BoolVar(&c.ShowVersion, "version", false, "print the version and exit")
 	flag.Parse()
 
-	switch c.HWAccel {
-	case "auto", "none", "videotoolbox", "vaapi", "nvenc":
-	default:
-		return nil, fmt.Errorf("unknown -hwaccel %q (want auto, none, videotoolbox, vaapi or nvenc)", c.HWAccel)
-	}
-
 	var err error
-	if c.DataDir, err = filepath.Abs(c.DataDir); err != nil {
-		return nil, err
-	}
 	if c.Libraries, err = parseLibraries(libs); err != nil {
 		return nil, err
 	}
-	return c, nil
+	return c, c.Check()
+}
+
+// Check validates the settings and makes the data directory absolute.
+func (c *Config) Check() error {
+	switch c.HWAccel {
+	case "auto", "none", "videotoolbox", "vaapi", "nvenc":
+	default:
+		return fmt.Errorf("unknown -hwaccel %q (want auto, none, videotoolbox, vaapi or nvenc)", c.HWAccel)
+	}
+	var err error
+	c.DataDir, err = filepath.Abs(c.DataDir)
+	return err
+}
+
+// AppDataDir is the usual place for an app's data on this system:
+// ~/Library/Application Support/Itan on macOS, %LOCALAPPDATA%\Itan on
+// Windows, ~/.local/share/itan elsewhere.
+func AppDataDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "data"
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "Itan")
+	case "windows":
+		if d := os.Getenv("LOCALAPPDATA"); d != "" {
+			return filepath.Join(d, "Itan")
+		}
+		return filepath.Join(home, "AppData", "Local", "Itan")
+	default:
+		if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+			return filepath.Join(d, "itan")
+		}
+		return filepath.Join(home, ".local", "share", "itan")
+	}
+}
+
+// defaultDataDir is AppDataDir, except that a ./data folder with a library
+// in it (the default before 0.2) keeps being used.
+func defaultDataDir() string {
+	if _, err := os.Stat(filepath.Join("data", "itan.db")); err == nil {
+		return "data"
+	}
+	return AppDataDir()
 }
 
 func parseLibraries(s string) ([]Library, error) {
