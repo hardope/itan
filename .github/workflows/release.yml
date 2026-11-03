@@ -1,7 +1,9 @@
 # Publishes a release when a version tag is pushed:
 #   git tag v0.1.0 && git push origin v0.1.0
-# Downloads for each platform go on the GitHub release page (GoReleaser,
-# see .goreleaser.yaml); the Docker image goes to ghcr.io/hardope/itan.
+# The command-line downloads for each platform go on the GitHub release
+# page (GoReleaser, see .goreleaser.yaml), then the desktop apps and the
+# source of the ffmpeg they include; the Docker image goes to
+# ghcr.io/hardope/itan.
 name: Release
 
 on:
@@ -27,6 +29,67 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  mac-app:
+    name: Mac app (${{ matrix.arch }})
+    needs: downloads # the release they're attached to
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - uses: actions/cache@v6
+        with:
+          path: dist/ffmpeg-cache
+          key: ffmpeg-macos-${{ matrix.arch }}-${{ hashFiles('packaging/ffmpeg.env') }}
+      - run: packaging/macos/build.sh "${GITHUB_REF_NAME#v}" ${{ matrix.arch }} dist
+      - run: gh release upload "$GITHUB_REF_NAME" dist/*.dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  windows-app:
+    name: Windows app
+    needs: downloads
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - uses: actions/cache@v6
+        with:
+          path: dist/ffmpeg-cache
+          key: ffmpeg-windows-${{ hashFiles('packaging/ffmpeg.env') }}
+      - shell: pwsh
+        run: packaging/windows/build.ps1 -Version ($env:GITHUB_REF_NAME.TrimStart("v")) -OutDir dist
+      - shell: bash
+        run: gh release upload "$GITHUB_REF_NAME" dist/*-setup.exe
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  ffmpeg-source:
+    name: ffmpeg source
+    needs: downloads
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      # The apps include ffmpeg, under the GPL: its source goes alongside.
+      - run: |
+          . packaging/ffmpeg.env
+          curl -fsSLO "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
+          gh release upload "$GITHUB_REF_NAME" "ffmpeg-$FFMPEG_VERSION.tar.xz"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   docker:
     name: Docker image

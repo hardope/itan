@@ -7,13 +7,13 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hardope/itan/internal/config"
+	"github.com/hardope/itan/internal/proc"
 )
 
 var contentTypes = map[string]string{
@@ -176,7 +176,7 @@ func (t *thumbnailer) generate(ctx context.Context, src, out string, durationMS 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	tmp := out + ".tmp.jpg"
-	cmd := exec.CommandContext(ctx, t.ffmpeg, "-hide_banner", "-loglevel", "error",
+	cmd := proc.Command(ctx, t.ffmpeg, "-hide_banner", "-loglevel", "error",
 		"-ss", fmt.Sprintf("%.2f", seek), "-i", src,
 		"-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "4", "-y", tmp)
 	if msg, err := cmd.CombinedOutput(); err != nil {

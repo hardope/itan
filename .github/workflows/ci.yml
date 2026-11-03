@@ -60,6 +60,49 @@ jobs:
           version: "~> v2"
           args: release --snapshot --clean
 
+  mac-app:
+    name: Mac app (${{ matrix.arch }})
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - uses: actions/cache@v6
+        with:
+          path: dist/ffmpeg-cache
+          key: ffmpeg-macos-${{ matrix.arch }}-${{ hashFiles('packaging/ffmpeg.env') }}
+      - run: packaging/macos/build.sh "0.0.0-ci.${GITHUB_SHA:0:7}" ${{ matrix.arch }} dist
+      # A test build to try before a release (Actions page, signed in).
+      - uses: actions/upload-artifact@v7
+        with:
+          name: itan-macos-${{ matrix.arch }}
+          path: dist/*.dmg
+          retention-days: 14
+
+  windows-app:
+    name: Windows app
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - uses: actions/cache@v6
+        with:
+          path: dist/ffmpeg-cache
+          key: ffmpeg-windows-${{ hashFiles('packaging/ffmpeg.env') }}
+      - shell: pwsh
+        run: packaging/windows/build.ps1 -Version "0.0.0-ci.$($env:GITHUB_SHA.Substring(0, 7))" -OutDir dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: itan-windows-amd64
+          path: dist/*-setup.exe
+          retention-days: 14
+
   docker:
     name: Docker image
     runs-on: ubuntu-latest

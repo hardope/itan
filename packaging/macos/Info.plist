@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Itan</string>
+	<key>CFBundleDisplayName</key>
+	<string>Itan</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.hardope.itan</string>
+	<key>CFBundleExecutable</key>
+	<string>Itan</string>
+	<key>CFBundleIconFile</key>
+	<string>Itan</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>@MINOS@</string>
+	<!-- A menu bar app: no Dock icon or app menu. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.entertainment</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Opeoluwa Adeyeri. Free software under the GNU AGPL v3.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Itan plays the videos in the folders you add to it.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Itan plays the videos in the folders you add to it.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Itan plays the videos in the folders you add to it.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Itan plays the videos on the drives you add to it.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Itan plays the videos on the network drives you add to it.</string>
+</dict>
+</plist>

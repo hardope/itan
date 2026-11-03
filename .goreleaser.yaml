@@ -6,6 +6,11 @@ version: 2
 
 project_name: itan
 
+before:
+  hooks:
+    # Licenses of what's built in, shipped in each archive (gitignored).
+    - sh -c "go run ./packaging/notices ./cmd/itan > THIRD-PARTY.txt"
+
 builds:
   - main: ./cmd/itan
     binary: itan
@@ -39,6 +44,7 @@ archives:
     files:
       - LICENSE
       - README.md
+      - THIRD-PARTY.txt
 
 checksum:
   name_template: checksums.txt
@@ -54,17 +60,26 @@ release:
   footer: |
     ## Which download?
 
+    **The app** runs Itan in the background, with an icon in the menu bar (Mac) or next to the clock (Windows). ffmpeg is included.
+
     | Computer | File |
     |---|---|
-    | Mac with Apple Silicon (M1 or later) | `macos_arm64` |
-    | Mac with an Intel processor | `macos_amd64` |
-    | Windows PC | `windows_amd64` (`windows_arm64` for Snapdragon laptops) |
+    | Mac with Apple Silicon (M1 or later) | `Itan-{{ .Version }}-macos-arm64.dmg` |
+    | Mac with an Intel processor | `Itan-{{ .Version }}-macos-amd64.dmg` |
+    | Windows 10 or 11 | `Itan-{{ .Version }}-windows-amd64-setup.exe` |
+
+    The apps aren't signed by Apple or Microsoft yet, so the first time needs an extra click: see [Opening the app the first time](https://github.com/hardope/itan#opening-the-app-the-first-time).
+
+    **The command** `itan` is for servers, NAS boxes and Raspberry Pis. Install [ffmpeg](https://ffmpeg.org/download.html) as well.
+
+    | Computer | File |
+    |---|---|
     | Linux PC or server | `linux_amd64` |
     | Raspberry Pi 4 or 5, or an ARM NAS, with a 64-bit OS | `linux_arm64` |
     | Raspberry Pi with 32-bit Raspberry Pi OS | `linux_armv7` |
-
-    Install [ffmpeg](https://ffmpeg.org/download.html) too, for thumbnails and for videos browsers can't play as they are.
+    | Mac, from a terminal | `macos_arm64` (Apple Silicon), `macos_amd64` (Intel) |
+    | Windows, from a terminal | `windows_amd64` (`windows_arm64` for Snapdragon laptops) |
 
     **Docker** (amd64, arm64, armv7; ffmpeg included): `docker pull ghcr.io/hardope/itan:{{ .Version }}`
 
-    See the [README](https://github.com/hardope/itan#readme) to get started.
+    The apps include FFmpeg, licensed under the GPL v3; its source code is attached as `ffmpeg-<version>.tar.xz`. See the [README](https://github.com/hardope/itan#readme) to get started.

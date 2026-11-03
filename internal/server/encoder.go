@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hardope/itan/internal/proc"
 )
 
 // Transcoding re-encodes video to H.264, which every browser plays. A
@@ -89,7 +90,7 @@ func testEncoder(ffmpeg string, e encoder) error {
 	args = append(args, "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-t", "0.5")
 	args = append(args, e.videoArgs(1280, 720)...)
 	args = append(args, "-f", "null", "-")
-	out, err := exec.CommandContext(ctx, ffmpeg, args...).CombinedOutput()
+	out, err := proc.Command(ctx, ffmpeg, args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, firstLine(string(out)))
 	}

@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"github.com/hardope/itan/internal/config"
+	"github.com/hardope/itan/internal/proc"
 )
 
 // HLS: for files the browser can't play directly, ffmpeg repackages them
@@ -145,7 +145,7 @@ func (m *hlsManager) start(ctx context.Context, id string, itemID int64, start f
 	}
 	procCtx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
-	cmd := exec.CommandContext(procCtx, m.ffmpeg, ffmpegHLSArgs(src, enc, start, s.dir)...)
+	cmd := proc.Command(procCtx, m.ffmpeg, ffmpegHLSArgs(src, enc, start, s.dir)...)
 	cmd.Stderr = s.stderr
 	if err := cmd.Start(); err != nil {
 		cancel()

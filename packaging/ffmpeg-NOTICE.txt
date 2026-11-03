@@ -1,0 +1,20 @@
+FFmpeg
+======
+
+Itan's desktop apps include ffmpeg and ffprobe from FFmpeg 9.0.2, which
+Itan runs to read videos, make thumbnails and convert videos browsers
+can't play. They are separate programs, not part of Itan's code.
+
+These builds include GPL-licensed parts (such as x264 and x265), so they
+are licensed under the GNU General Public License, version 3. Its text is
+in GPL-3.0.txt next to this file, and at https://www.gnu.org/licenses/gpl-3.0.txt
+
+Source code: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+A copy is also attached to every Itan release that includes these builds:
+https://github.com/hardope/itan/releases
+
+The builds come from:
+- macOS: Martin Riedl, https://ffmpeg.martin-riedl.de
+  (build scripts: https://git.martin-riedl.de/ffmpeg/build-script)
+- Windows: Gyan Doshi, https://www.gyan.dev/ffmpeg/builds/
+  (the build's README lists its configuration and the libraries in it)

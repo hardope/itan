@@ -1,4 +1,6 @@
 /data/
 /itan
 /dist/
+/THIRD-PARTY.txt
+/cmd/itan-desktop/*.syso
 .DS_Store

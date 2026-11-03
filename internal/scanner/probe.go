@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hardope/itan/internal/proc"
 )
 
 // Probe is the technical metadata ffprobe reports for a file.
@@ -64,7 +66,7 @@ type ffprobeOutput struct {
 func RunProbe(ctx context.Context, ffprobe, path string) (*Probe, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, ffprobe,
+	out, err := proc.Command(ctx, ffprobe,
 		"-v", "error", "-print_format", "json", "-show_format", "-show_streams", path).Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {

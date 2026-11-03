@@ -29,26 +29,64 @@ Point it at your folders and watch on any device on your Wi-Fi.
 > browser can't decode (HEVC on most browsers, XviD, VC-1, ...) is transcoded
 > to H.264, using a hardware encoder when one is available.
 
-## Download
+## Install the app
 
-Get the file for your computer from the
+On a Mac or a Windows PC, the app is the easy way. It runs Itan in the
+background, with an icon in the menu bar (Mac) or next to the clock
+(Windows), and ffmpeg comes with it.
+
+1. Download it from the
+   [latest release](https://github.com/hardope/itan/releases/latest):
+   - Mac with Apple Silicon (M1 or later): `Itan-<version>-macos-arm64.dmg`
+   - Mac with an Intel processor: `Itan-<version>-macos-amd64.dmg`
+   - Windows 10 or 11: `Itan-<version>-windows-amd64-setup.exe`
+2. **Mac:** open the `.dmg` and drag Itan to Applications, then open it
+   from there. **Windows:** run the installer.
+3. Itan opens in your browser. Choose **Browse…** to add a folder of videos.
+
+The icon's menu opens Itan, lists the addresses other devices can use
+(click one to copy it), turns **Open at login** on or off, and quits. On a
+Mac, Open at login starts on; the Windows installer asks. The Mac app needs
+macOS 13 Ventura or later.
+
+### Opening the app the first time
+
+The apps aren't signed by Apple or Microsoft yet, so the system asks before
+opening one the first time:
+
+- **macOS** says it can't check Itan for malicious software. Click *Done*,
+  open *System Settings → Privacy & Security*, scroll to the message about
+  Itan and click *Open Anyway*. Or, in Terminal:
+  `xattr -dr com.apple.quarantine /Applications/Itan.app`
+- **Windows** shows "Windows protected your PC". Click *More info*, then
+  *Run anyway*. When Itan first starts, Windows Firewall may ask whether to
+  allow it on private networks: allow it, or other devices can't connect.
+
+### Where Itan keeps things
+
+| | macOS | Windows |
+|---|---|---|
+| Library: database, thumbnails, `itan.log` | `~/Library/Application Support/Itan` | `%LOCALAPPDATA%\Itan` |
+| The app | `/Applications/Itan.app` | `%LOCALAPPDATA%\Programs\Itan` |
+
+Uninstalling keeps the library, so reinstalling picks up where you left off.
+Delete that folder to remove it too.
+
+## Run the command
+
+For servers, NAS boxes and Raspberry Pis, or to run Itan from a terminal:
+get the `itan_<version>_<system>` archive for your computer from the
 [latest release](https://github.com/hardope/itan/releases/latest) (the
-release page says which one to pick), unpack it, and start it from a
-terminal in that folder:
+release page says which one to pick), unpack it, and start it:
 
 ```bash
 ./itan -libraries "Videos=$HOME/Videos"
 ```
 
 Install [ffmpeg](https://ffmpeg.org/download.html) as well, for thumbnails
-and for videos browsers can't play as they are.
-
-The downloads aren't signed yet, so the first run needs one extra step:
-
-- **macOS** blocks files downloaded in a browser. Unblock it once with
-  `xattr -d com.apple.quarantine itan`.
-- **Windows** may show "Windows protected your PC". Click *More info*, then
-  *Run anyway*.
+and for videos browsers can't play as they are. On a Mac, a downloaded
+`itan` needs `xattr -d com.apple.quarantine itan` once; on Windows, *More
+info* then *Run anyway*.
 
 ## Run with Docker
 
@@ -72,6 +110,11 @@ go build -o itan ./cmd/itan
 ./itan -libraries "Videos=$HOME/Videos"
 ```
 
+The desktop app is `./cmd/itan-desktop` (on a Mac it needs the Xcode
+command line tools, for the menu bar code). `packaging/macos/build.sh` and
+`packaging/windows/build.ps1` build the `.dmg` and the installer, with
+ffmpeg; `go run ./packaging/icons` redraws the icons.
+
 On startup the server logs the URLs other devices can use. You can also add
 folders from the ⚙ page in the web UI.
 
@@ -80,7 +123,7 @@ folders from the ⚙ page in the web UI.
 | Flag | Env var | Default | |
 |---|---|---|---|
 | `-addr` | `ITAN_ADDR` | `:8080` | Listen address |
-| `-data` | `ITAN_DATA` | `./data` | Database and thumbnails |
+| `-data` | `ITAN_DATA` | see below | Database, thumbnails (and the app's log) |
 | `-libraries` | `ITAN_LIBRARIES` | | `"Name=/path;Other=/path2"`, registered on startup |
 | `-scan-interval` | `ITAN_SCAN_INTERVAL` | `30m` | Periodic rescan, `0` to disable |
 | `-ffprobe` | `ITAN_FFPROBE` | `ffprobe` | ffprobe binary |
@@ -89,6 +132,12 @@ folders from the ⚙ page in the web UI.
 | `-max-transcodes` | `ITAN_MAX_TRANSCODES` | `2` | Simultaneous transcodes, `0` to disable transcoding |
 | `-reset-pin` | | | Remove the edit PIN (if it's forgotten) and exit |
 | `-version` | | | Print the version and exit |
+
+The data folder defaults to the usual place for app data:
+`~/Library/Application Support/Itan` on macOS, `%LOCALAPPDATA%\Itan` on
+Windows and `~/.local/share/itan` on Linux. A `./data` folder with a library
+in it (the default before 0.2) keeps being used. The app takes `-data` and
+`-addr` too; if its port is taken, it uses the next free one.
 
 ## Libraries
 
@@ -311,14 +360,18 @@ unlocked device; otherwise they answer `401 {"locked": true}`.
 ## Layout
 
 ```
-cmd/itan/          entry point
-internal/config/       flags and env vars
+cmd/itan/              the itan command
+cmd/itan-desktop/      the desktop app: menu bar / notification area icon
+internal/app/          starts the server: database, scans, HTTP
+internal/config/       flags and env vars, the data folder
 internal/db/           schema.sql, migrations, tag helpers, search index
 internal/scanner/      walk, ph1 hash, filename parsing, ffprobe
 internal/metadata/     export, import, folder files, pending imports
 internal/recommend/    recommendations: feature vectors, taste, diversity
 internal/server/       HTTP API, streaming, thumbnails
 internal/server/web/   web UI (plain HTML/CSS/JS, embedded in the binary)
+internal/proc/         runs ffmpeg and ffprobe (without console windows on Windows)
+packaging/             the Mac app, the Windows installer, icons, notices, pinned ffmpeg
 docs/                  metadata export format spec, README screenshots
 ```
 
@@ -338,11 +391,13 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-GitHub Actions then puts the downloads for each platform on the release page
-([.goreleaser.yaml](.goreleaser.yaml)) and the Docker image on
-`ghcr.io/hardope/itan`. Tags like `v0.2.0-rc.1` become pre-releases. Every
-push to `main` runs the tests on Linux, macOS and Windows and checks that
-both still build.
+GitHub Actions then puts the command for each platform
+([.goreleaser.yaml](.goreleaser.yaml)), the Mac and Windows apps, and the
+source of the ffmpeg they include on the release page, and the Docker image
+on `ghcr.io/hardope/itan`. Tags like `v0.2.0-rc.1` become pre-releases.
+Every push to `main` runs the tests on Linux, macOS and Windows and builds
+everything; the apps it builds stay on the run's page for two weeks, to try
+before a release.
 
 ## License
 
@@ -354,3 +409,5 @@ version over a network, you must offer them its source code too.
 
 The web UI bundles [hls.js](https://github.com/video-dev/hls.js), which is
 under the Apache License 2.0 ([its license](internal/server/web/vendor/hls.js.LICENSE)).
+The desktop apps include [FFmpeg](https://ffmpeg.org), under the GPL v3
+([details and source](packaging/ffmpeg-NOTICE.txt)).
