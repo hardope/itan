@@ -1940,13 +1940,22 @@ function addFolderForm(onAdded) {
   const kind = h("select", { class: "input" }, KINDS.map((k) => h("option", { value: k }, kindLabel(k))));
   const err = h("p", { class: "form-error", hidden: true });
   const btn = h("button", { class: "btn btn-primary", type: "submit", style: "height:42px" }, icon("plus"), "Add folder");
+  const browse = h("button", { class: "btn", type: "button", style: "height:42px", onclick: async () => {
+    if (auth.pin_set && !auth.unlocked && !(await unlockDialog())) return;
+    const chosen = await folderPicker(path.value.trim());
+    if (chosen) {
+      path.value = chosen;
+      path.dispatchEvent(new Event("input"));
+      err.hidden = true;
+    }
+  } }, icon("folder"), "Browse…");
   path.addEventListener("input", () => {
     name.placeholder = path.value.trim().replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "Name";
   });
   return h("form", { onsubmit: async (e) => {
     e.preventDefault();
     err.hidden = true;
-    if (!path.value.trim()) { err.textContent = "Enter the folder's full path."; err.hidden = false; path.focus(); return; }
+    if (!path.value.trim()) { err.textContent = "Choose a folder, or enter its full path."; err.hidden = false; path.focus(); return; }
     btn.classList.add("busy");
     try {
       await api("/api/libraries", { method: "POST", body: { name: name.value.trim(), path: path.value.trim(), default_kind: kind.value } });
@@ -1959,8 +1968,62 @@ function addFolderForm(onAdded) {
       btn.classList.remove("busy");
     }
   } },
-  h("div", { class: "add-form" }, labeled("Folder path", path), labeled("Name", name), labeled("Mostly", kind), btn),
+  h("div", { class: "add-form" }, labeled("Folder path", h("div", { class: "path-row" }, path, browse)),
+    labeled("Name", name), labeled("Mostly", kind), btn),
   err);
+}
+
+// folderPicker walks the folders on the computer running Itan, so adding
+// one doesn't mean typing its path. It starts at start if that's a folder,
+// and resolves to the chosen path, or null.
+function folderPicker(start) {
+  return new Promise((resolve) => {
+    let current = "", parent = "";
+    const where = h("div", { class: "picker-where" });
+    const list = h("div", { class: "picker-list" });
+    const back = h("button", { class: "btn btn-sm", type: "button", onclick: () => load(parent) }, icon("chevronLeft"), "Back");
+    const choose = h("button", { class: "btn btn-primary", type: "button", onclick: () => d.close("ok") }, "Use this folder");
+    const d = h("dialog", { class: "confirm picker", "aria-label": "Choose a folder" },
+      h("h2", {}, "Choose a folder"),
+      h("div", { class: "picker-bar" }, back, where),
+      list,
+      h("div", { class: "dialog-actions" },
+        h("button", { class: "btn btn-ghost", type: "button", onclick: () => d.close("cancel") }, "Cancel"),
+        choose));
+
+    async function load(path, fallback) {
+      let res;
+      try {
+        res = await api(`/api/folders?path=${encodeURIComponent(path)}`);
+      } catch (e) {
+        if (fallback !== undefined) return load(fallback);
+        toast(e.message, "error");
+        return;
+      }
+      current = res.path;
+      parent = res.parent;
+      where.textContent = current || `Places on the computer running ${APP_NAME}`;
+      back.hidden = !current;
+      choose.disabled = !current;
+      list.replaceChildren(...(res.folders.length
+        ? res.folders.map((f) => h("button", { class: "picker-item", type: "button", onclick: () => load(f.path) },
+          icon("folder"), h("span", {}, f.name), icon("chevronRight")))
+        : [h("p", { class: "hint picker-empty" }, current ? "No folders in here. Use this folder if the videos are in it." : "No places found.")]));
+      list.scrollTop = 0;
+      (list.querySelector("button") || choose).focus();
+    }
+
+    const under = overlayOpen;
+    d.addEventListener("close", () => {
+      overlayOpen = under;
+      resolve(d.returnValue === "ok" && current ? current : null);
+      d.remove();
+    });
+    document.body.append(d);
+    overlayOpen = true;
+    d.showModal();
+    load(start, "");
+  });
 }
 
 function devicesSection(urls) {

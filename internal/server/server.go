@@ -70,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/libraries", s.requireEdit(s.addLibrary))
 	mux.HandleFunc("PATCH /api/libraries/{id}", s.requireEdit(s.updateLibrary))
 	mux.HandleFunc("DELETE /api/libraries/{id}", s.requireEdit(s.deleteLibrary))
+	mux.HandleFunc("GET /api/folders", s.requireEdit(s.browseFolders))
 	mux.HandleFunc("GET /api/export", s.requireEdit(s.exportLibrary))
 	mux.HandleFunc("POST /api/import", s.requireEdit(s.importLibrary))
 	mux.HandleFunc("GET /api/auth", s.authState)
