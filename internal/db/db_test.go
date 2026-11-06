@@ -14,8 +14,9 @@ func TestMigrateFromV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Turn it back into a v1 database with some data in it: undo what
-	// versions 2 and 3 add.
+	// versions 2 to 4 add.
 	for _, q := range []string{
+		`ALTER TABLE items DROP COLUMN thumbnail_at_ms`,
 		`DROP TABLE pending_imports`,
 		`DROP TABLE edit_sessions`,
 		`DROP INDEX collections_match_idx`,
@@ -50,5 +51,8 @@ func TestMigrateFromV1(t *testing.T) {
 	}
 	if _, err := d.ExecContext(ctx, `INSERT INTO collections(uid, kind, title, match_key) VALUES ('u', 'series', 'S', 's')`); err != nil {
 		t.Errorf("collections.match_key missing after migration: %v", err)
+	}
+	if _, err := d.ExecContext(ctx, `SELECT thumbnail_at_ms FROM items`); err != nil {
+		t.Errorf("items.thumbnail_at_ms missing after migration: %v", err)
 	}
 }

@@ -66,6 +66,7 @@ const ICONS = {
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/>',
   alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16h.01"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/>',
   refresh: '<path d="M21 12a9 9 0 0 1-15.5 6.2L3 16M3 12a9 9 0 0 1 15.5-6.2L21 8M21 3v5h-5M3 21v-5h5"/>',
   download: '<path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>',
   upload: '<path d="M12 15V3m0 0L8 7m4-4 4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>',
@@ -221,6 +222,68 @@ function confirmDialog({ title, body, confirm = "OK", danger = false }) {
     overlayOpen = true;
     d.showModal();
   });
+}
+
+// thumbnailDialog changes a video's thumbnail: to the frame on screen in
+// the player, or to another moment Itan picks.
+function thumbnailDialog(it, player) {
+  const url = `/api/items/${it.id}/thumbnail`;
+  const img = h("img", { class: "thumb-preview", alt: "", src: `${url}?v=${Date.now()}` });
+  const pos = player.started() ? player.position() : 0;
+  const err = h("p", { class: "form-error", "aria-live": "polite" });
+  const set = async (btn, body, done) => {
+    btn.classList.add("busy");
+    err.textContent = "";
+    try {
+      await api(url, { method: "POST", body });
+      img.src = `${url}?v=${Date.now()}`;
+      player.video.poster = img.src;
+      toast(done);
+    } catch (e) {
+      err.textContent = e.message;
+    } finally {
+      btn.classList.remove("busy");
+    }
+  };
+  const useFrame = h("button", { class: "btn btn-primary", type: "button", disabled: !pos,
+    onclick: () => set(useFrame, { at_ms: Math.round(pos * 1000) }, "Thumbnail changed to the frame you chose") },
+  icon("image"), pos ? `Use the frame at ${clock(pos)}` : "Use the frame on screen");
+  const another = h("button", { class: "btn", type: "button",
+    onclick: () => set(another, {}, "Thumbnail changed") }, icon("refresh"), "Another moment");
+  const d = h("dialog", { class: "confirm thumb-dialog" },
+    h("h2", {}, "Thumbnail"),
+    img,
+    h("p", {}, pos ? `Use the frame the player is on, or let ${APP_NAME} take another moment of the video.`
+      : `Play the video to the frame you want and open this again, or let ${APP_NAME} take another moment.`),
+    err,
+    h("div", { class: "dialog-actions" },
+      h("button", { class: "btn btn-ghost", type: "button", onclick: () => d.close() }, "Done"),
+      another, useFrame));
+  const under = overlayOpen;
+  d.addEventListener("close", () => { overlayOpen = under; d.remove(); });
+  document.body.append(d);
+  overlayOpen = true;
+  d.showModal();
+}
+
+function thumbnailsSection() {
+  const btn = h("button", { class: "btn", onclick: async () => {
+    const ok = await confirmDialog({ title: "Regenerate all thumbnails?",
+      body: "Each one is made again the next time it's shown, including any that failed before. Frames you chose for a video are kept.",
+      confirm: "Regenerate" });
+    if (!ok) return;
+    btn.classList.add("busy");
+    try {
+      const res = await api("/api/thumbnails/regenerate", { method: "POST" });
+      toast(res.removed ? `${res.removed} thumbnails will be made again as you browse` : "Thumbnails will be made again as you browse");
+    } catch (e) {
+      toast(e.message, "error");
+    } finally {
+      btn.classList.remove("busy");
+    }
+  } }, icon("refresh"), "Regenerate all");
+  return section({ title: "Thumbnails", action: btn,
+    desc: `${APP_NAME} takes each video's thumbnail from a frame 10% in. To choose a different one for a video, use Thumbnail on its page.` });
 }
 
 // ---------- edit PIN ----------
@@ -801,7 +864,8 @@ async function renderItem(id, params, ctx) {
           icon("skipNext"), "Next episode"),
         favoriteButton(it),
         ratingStars(it, update),
-        h("button", { class: "btn", onclick: () => edit("title") }, icon(editIcon()), "Edit details")),
+        h("button", { class: "btn", onclick: () => edit("title") }, icon(editIcon()), "Edit details"),
+        h("button", { class: "btn", onclick: () => thumbnailDialog(it, player) }, icon("image"), "Thumbnail")),
     ).childNodes);
   }
 
@@ -1788,6 +1852,7 @@ async function renderSettings(ctx) {
       scanBox),
     section({ title: "Add a folder", desc: `A folder on the computer running ${APP_NAME}, not on the device you're browsing from. Subfolders are included.` },
       addFolderForm(() => route())),
+    thumbnailsSection(),
     pinSection(),
     info.lan_urls.length && devicesSection(info.lan_urls),
     backupSection(),

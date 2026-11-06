@@ -15,11 +15,12 @@ import (
 //go:embed schema.sql
 var schema string
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 // migrations[n] upgrades a version n-1 database to version n. schema.sql
 // always holds the full current schema for fresh installs.
 var migrations = map[int]string{
+	4: `ALTER TABLE items ADD COLUMN thumbnail_at_ms INTEGER;`,
 	3: `
 		ALTER TABLE collections ADD COLUMN match_key TEXT;
 		CREATE INDEX collections_match_idx ON collections(kind, match_key);

@@ -845,7 +845,14 @@ dialog.confirm {
 dialog.confirm::backdrop { background: var(--overlay); }
 dialog.confirm h2 { margin: 0 0 8px; font-size: 19px; letter-spacing: -.01em; }
 dialog.confirm p { margin: 0 0 22px; color: var(--text-2); line-height: 1.55; }
-.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+dialog.thumb-dialog { width: min(520px, calc(100vw - 32px)); }
+.thumb-preview {
+  display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover;
+  margin: 14px 0 16px; border-radius: var(--r); background: var(--surface-2);
+}
+dialog.thumb-dialog .form-error:empty { display: none; }
+dialog.thumb-dialog .form-error { margin: -10px 0 16px; }
 
 #toasts {
   position: fixed; left: 50%; z-index: 100;

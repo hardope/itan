@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -68,29 +70,118 @@ func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	var hash string
-	var duration *int64
-	if err := s.db.QueryRowContext(r.Context(),
-		`SELECT content_hash, duration_ms FROM items WHERE id = ?`, id).Scan(&hash, &duration); err != nil {
-		serverError(w, r, err)
-		return
-	}
-	src, err := s.filePath(r.Context(), id)
-	if err != nil {
-		serverError(w, r, err)
-		return
-	}
-	var durMS int64
-	if duration != nil {
-		durMS = *duration
-	}
-	out, err := s.thumbs.get(r.Context(), hash, src, durMS)
-	if err != nil {
+	out, err := s.thumbnailFor(r.Context(), id)
+	if errors.Is(err, errNoThumb) {
 		writeError(w, http.StatusNotFound, "no thumbnail")
 		return
+	} else if err != nil {
+		serverError(w, r, err)
+		return
 	}
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	// Thumbnails can be regenerated: browsers check for a newer one (a
+	// quick "not modified" when there isn't) rather than keep it a day.
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, out)
+}
+
+// thumbnailFor returns the path of an item's thumbnail, making it first
+// if needed.
+func (s *Server) thumbnailFor(ctx context.Context, id int64) (string, error) {
+	var hash string
+	var duration, at sql.NullInt64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT content_hash, duration_ms, thumbnail_at_ms FROM items WHERE id = ?`, id).Scan(&hash, &duration, &at); err != nil {
+		return "", err
+	}
+	src, err := s.filePath(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return s.thumbs.get(ctx, hash, src, duration.Int64, at.Int64)
+}
+
+// thumbnailMoments are where "another moment" looks in turn, as fractions
+// of the video; the default thumbnail is at the first.
+var thumbnailMoments = []float64{0.1, 0.25, 0.4, 0.55, 0.7, 0.85}
+
+// setThumbnail makes a new thumbnail for an item: from the frame at
+// at_ms (the one on screen in the player), or else from the next of
+// thumbnailMoments. The choice is kept for regenerating.
+func (s *Server) setThumbnail(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	var body struct {
+		AtMS *int64 `json:"at_ms"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	var hash string
+	var duration, cur sql.NullInt64
+	if err := s.db.QueryRowContext(r.Context(),
+		`SELECT content_hash, duration_ms, thumbnail_at_ms FROM items WHERE id = ?`, id).Scan(&hash, &duration, &cur); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	var at sql.NullInt64
+	switch {
+	case body.AtMS != nil:
+		at = sql.NullInt64{Int64: max(0, *body.AtMS), Valid: true}
+		if duration.Int64 > 0 {
+			at.Int64 = min(at.Int64, duration.Int64-1)
+		}
+	case duration.Int64 > 0:
+		now := thumbnailMoments[0]
+		if cur.Valid {
+			now = float64(cur.Int64) / float64(duration.Int64)
+		}
+		next := thumbnailMoments[0]
+		for _, m := range thumbnailMoments {
+			if m > now+0.01 {
+				next = m
+				break
+			}
+		}
+		if next != thumbnailMoments[0] {
+			at = sql.NullInt64{Int64: int64(next * float64(duration.Int64)), Valid: true}
+		}
+	}
+	if _, err := s.db.ExecContext(r.Context(),
+		`UPDATE items SET thumbnail_at_ms = ? WHERE id = ?`, at, id); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	s.thumbs.forget(hash)
+	if _, err := s.thumbnailFor(r.Context(), id); err != nil {
+		if errors.Is(err, errNoThumb) || errors.Is(err, sql.ErrNoRows) { // no frame, or no file
+			writeError(w, http.StatusUnprocessableEntity, "Couldn't take a frame from this video. Is its drive connected?")
+			return
+		}
+		serverError(w, r, err)
+		return
+	}
+	var chosen any // null: the default frame
+	if at.Valid {
+		chosen = at.Int64
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"thumbnail_at_ms": chosen})
+}
+
+// regenerateThumbnails removes every thumbnail, so each is made again the
+// next time it's shown (from the frame chosen for it, if any), including
+// ones that failed before.
+func (s *Server) regenerateThumbnails(w http.ResponseWriter, r *http.Request) {
+	n, err := s.thumbs.clear()
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	log.Printf("thumbnails: removed %d to make again", n)
+	writeJSON(w, http.StatusOK, map[string]int{"removed": n})
 }
 
 // thumbnailer extracts one frame per item with ffmpeg, on first request,
@@ -117,8 +208,14 @@ func newThumbnailer(cfg *config.Config) *thumbnailer {
 
 var errNoThumb = errors.New("thumbnail unavailable")
 
-func (t *thumbnailer) get(ctx context.Context, hash, src string, durationMS int64) (string, error) {
-	out := filepath.Join(t.dir, strings.ReplaceAll(hash, ":", "_")+"-w640.jpg")
+func (t *thumbnailer) path(hash string) string {
+	return filepath.Join(t.dir, strings.ReplaceAll(hash, ":", "_")+"-w640.jpg")
+}
+
+// get returns the thumbnail for hash, taken from src at atMS (or 10% in
+// when that's 0).
+func (t *thumbnailer) get(ctx context.Context, hash, src string, durationMS, atMS int64) (string, error) {
+	out := t.path(hash)
 	if _, err := os.Stat(out); err == nil {
 		return out, nil
 	}
@@ -141,7 +238,7 @@ func (t *thumbnailer) get(ctx context.Context, hash, src string, durationMS int6
 	t.inflight[hash] = wg
 	t.mu.Unlock()
 
-	err := t.generate(ctx, src, out, durationMS)
+	err := t.generate(ctx, src, out, durationMS, atMS)
 
 	t.mu.Lock()
 	delete(t.inflight, hash)
@@ -158,7 +255,36 @@ func (t *thumbnailer) get(ctx context.Context, hash, src string, durationMS int6
 	return out, nil
 }
 
-func (t *thumbnailer) generate(ctx context.Context, src, out string, durationMS int64) error {
+// forget removes hash's thumbnail, and that it failed, if it did.
+func (t *thumbnailer) forget(hash string) {
+	t.mu.Lock()
+	delete(t.failed, hash)
+	t.mu.Unlock()
+	os.Remove(t.path(hash))
+}
+
+// clear removes every thumbnail and every failure, returning how many
+// thumbnails there were.
+func (t *thumbnailer) clear() (int, error) {
+	t.mu.Lock()
+	t.failed = map[string]bool{}
+	t.mu.Unlock()
+	entries, err := os.ReadDir(t.dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	} else if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".jpg") && os.Remove(filepath.Join(t.dir, e.Name())) == nil {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (t *thumbnailer) generate(ctx context.Context, src, out string, durationMS, atMS int64) error {
 	select {
 	case t.sem <- struct{}{}:
 		defer func() { <-t.sem }()
@@ -169,8 +295,10 @@ func (t *thumbnailer) generate(ctx context.Context, src, out string, durationMS 
 		return err
 	}
 	// 10% in usually skips intros and black frames.
-	seek := float64(durationMS) / 1000 * 0.1
-	if seek <= 0 {
+	seek := float64(durationMS) / 1000 * thumbnailMoments[0]
+	if atMS > 0 {
+		seek = float64(atMS) / 1000
+	} else if seek <= 0 {
 		seek = 5
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)

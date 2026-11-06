@@ -57,6 +57,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/items/{id}", s.requireEdit(s.updateItem))
 	mux.HandleFunc("POST /api/items/{id}/progress", s.saveProgress)
 	mux.HandleFunc("GET /api/items/{id}/thumbnail", s.thumbnail)
+	mux.HandleFunc("POST /api/items/{id}/thumbnail", s.requireEdit(s.setThumbnail))
+	mux.HandleFunc("POST /api/thumbnails/regenerate", s.requireEdit(s.regenerateThumbnails))
 	mux.HandleFunc("GET /api/items/{id}/similar", s.similarItems)
 	mux.HandleFunc("PUT /api/items/{id}/favorite", s.setFavorite)
 	mux.HandleFunc("GET /api/recommendations", s.recommendations)

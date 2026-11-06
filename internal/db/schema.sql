@@ -12,7 +12,7 @@
 -- Per-connection pragmas (foreign_keys, journal_mode, busy_timeout) are set
 -- in the connection string, see db.go.
 
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 
 ------------------------------------------------------------------------
 -- Libraries: root folders the user configured
@@ -77,6 +77,7 @@ CREATE TABLE items (
     -- Media assets (paths inside the config dir, regenerated on demand)
     poster_path     TEXT,
     thumbnail_path  TEXT,
+    thumbnail_at_ms INTEGER,                      -- frame someone chose; NULL: 10% in
 
     added_at        INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
