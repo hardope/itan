@@ -22,6 +22,28 @@ func TestParseFilename(t *testing.T) {
 		{"[Group] Concert Live at Montreux [1080p].mp4", Parsed{Title: "Concert Live at Montreux"}},
 		{"montreux_2019_set.mp4", Parsed{Title: "montreux", Year: 2019}},
 		{"My home video.mov", Parsed{Title: "My home video"}},
+		{"Spider-Man Homecoming 2017.mkv", Parsed{Title: "Spider-Man Homecoming", Year: 2017}},
+		{"The Latest Thing.mp4", Parsed{Title: "The Latest Thing"}},
+
+		// Names from video downloaders and upload sites.
+		{"YTDown.com_YouTube_Media_UTyk0QyT0_Y_Honeymoon-Latest-Yoruba-Movies-2026-Lateef-Adedimeji-Irewole-Olaniyan-Temitope-A_003_480p.mp4",
+			Parsed{Title: "Honeymoon", Year: 2026}},
+		{"YTDown.com_YouTube_Media_LbD8leFCB-I_World-s-Most-Advanced-Supercars_002_720p.mp4", Parsed{Title: "World's Most Advanced Supercars"}},
+		{"YTDown.com_YouTube_Media_Y07j3hXAI-g_Dangerous-apps-In-the-web-of-data-brokers-DW-Documentary_002_720p.mp4",
+			Parsed{Title: "Dangerous apps In the web of data brokers"}},
+		{"YTDown.com_YouTube_Media_ku9edEKvGuY_Anonymous-The-Hacker-Wars-Full-Documentary_001_720p.mp4", Parsed{Title: "Anonymous The Hacker Wars"}},
+		{"YTDown.com_YouTube_Media_aEB-ppoz5iA_Celestial-Oldies-Medley_002_720p(1).mp4", Parsed{Title: "Celestial Oldies Medley"}},
+		{"THE-LAST-DRIVER-LATEST-YORUBA-MOVIE-2026-BABATUNDE-ADERINOYE-IREWOLE-OLANIYAN-AB_002_720p.mp4", Parsed{Title: "THE LAST DRIVER", Year: 2026}},
+		{"Kemi-Eyinju-CCC-Hymns-Worship-Easter-Edition_001_720p.mp4", Parsed{Title: "Kemi Eyinju CCC Hymns Worship Easter Edition"}},
+		{"Asorokele-Latest-SnapYT.App.mp4", Parsed{Title: "Asorokele"}},
+		{"Bola-Sunmisola-SnapYT.App.mp4", Parsed{Title: "Bola Sunmisola"}},
+		{"ALAGBARA AYE - Full Yoruba Movie 2025 ｜ Latest Nigerian Movie Odunlade Adekola, Bose Akinola.mp4", Parsed{Title: "ALAGBARA AYE", Year: 2025}},
+		{"CAFE EDEBIRI (LATEST NOLLYWOOD MOVIE)- NKEM OWOH, BOLAJI OGUNMOLA.mp4", Parsed{Title: "CAFE EDEBIRI"}},
+		{"OMOTENA (His Woman) -Nigerian Movies latest Full Movies 2025 Deborah Shokoya.mp4", Parsed{Title: "OMOTENA (His Woman)", Year: 2025}},
+		{"Humanoid robots and new chips - Will Germany become a tech hotspot? | DW Documentary 2026.mp4",
+			Parsed{Title: "Humanoid robots and new chips - Will Germany become a tech hotspot?", Year: 2026}},
+		{"24kGoldn Mood Official Video ft iann dior.mp4", Parsed{Title: "24kGoldn Mood ft iann dior"}},
+		{"Falz ft Simi - Foreign.mp4", Parsed{Title: "Falz ft Simi - Foreign"}},
 	}
 	for _, tt := range tests {
 		if got := ParseFilename(tt.path); got != tt.want {

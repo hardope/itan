@@ -108,6 +108,11 @@ func (s *Scanner) Scan(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	if n, err := s.retitle(ctx); err != nil {
+		s.addError("%v", err)
+	} else if n > 0 {
+		log.Printf("scan: retitled %d videos from their file names", n)
+	}
 	if n, err := s.forgetMoved(ctx); err != nil {
 		s.addError("%v", err)
 	} else if n > 0 {
@@ -118,6 +123,77 @@ func (s *Scanner) Scan(ctx context.Context) error {
 	log.Printf("scan: done in %s: %d files, %d new, %d missing, %d errors",
 		time.Since(st.StartedAt).Round(time.Millisecond), st.Seen, st.Added, st.Missing, len(st.Errors))
 	return nil
+}
+
+// retitle keeps titles and years that came from file names in step with
+// the names, after a file is renamed or when reading names improves.
+// Titles and years someone set, or that came from the file itself, stay.
+func (s *Scanner) retitle(ctx context.Context) (int, error) {
+	type named struct {
+		id      int64
+		title   string
+		year    sql.NullInt64
+		yearSrc sql.NullString
+		rel     string
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT i.id, i.title, i.year, ys.source,
+		       (SELECT f.rel_path FROM files f WHERE f.item_id = i.id AND f.missing_since IS NULL ORDER BY f.id LIMIT 1)
+		  FROM items i
+		  JOIN item_field_sources ts ON ts.item_id = i.id AND ts.field = 'title' AND ts.source = 'filename'
+		  LEFT JOIN item_field_sources ys ON ys.item_id = i.id AND ys.field = 'year'`)
+	if err != nil {
+		return 0, err
+	}
+	var items []named
+	for rows.Next() {
+		var n named
+		var rel sql.NullString
+		if err := rows.Scan(&n.id, &n.title, &n.year, &n.yearSrc, &rel); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if rel.Valid {
+			n.rel = rel.String
+			items = append(items, n)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	changed := 0
+	for _, n := range items {
+		title, year, _ := nameTitle(n.rel)
+		setTitle := title != n.title
+		setYear := year > 0 && int64(year) != n.year.Int64 && (!n.yearSrc.Valid || n.yearSrc.String == "filename")
+		if !setTitle && !setYear {
+			continue
+		}
+		err := db.Tx(ctx, s.db, func(tx *sql.Tx) error {
+			if setTitle {
+				if _, err := tx.ExecContext(ctx, `UPDATE items SET title = ? WHERE id = ?`, title, n.id); err != nil {
+					return err
+				}
+			}
+			if setYear {
+				if _, err := tx.ExecContext(ctx, `UPDATE items SET year = ? WHERE id = ?`, year, n.id); err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO item_field_sources(item_id, field, source) VALUES (?, 'year', 'filename')
+					ON CONFLICT(item_id, field) DO NOTHING`, n.id); err != nil {
+					return err
+				}
+			}
+			return db.ReindexItem(ctx, tx, n.id)
+		})
+		if err != nil {
+			return changed, err
+		}
+		changed++
+	}
+	return changed, nil
 }
 
 func (s *Scanner) libraries(ctx context.Context) ([]library, error) {
@@ -372,18 +448,27 @@ func (s *Scanner) applyImported(ctx context.Context, lib library, itemID int64, 
 	}
 }
 
-func (s *Scanner) createItem(ctx context.Context, lib library, rel, hash string, size int64, probe *Probe, probeErr error) (int64, error) {
+// nameTitle is the title and year a file's path gives it, and whether it's
+// an episode.
+func nameTitle(rel string) (title string, year int, episode bool) {
 	parsed := ParseFilename(rel)
-
-	title, titleSrc := parsed.Title, "filename"
-	kind, kindSrc := lib.defaultKind, "folder"
 	if ep, ok := ParseEpisode(rel); ok {
 		// Shown under the series name, so the episode's own title is enough.
-		kind, kindSrc = "episode", "filename"
 		title = ep.Title
 		if title == "" {
 			title = fmt.Sprintf("Episode %d", ep.Number)
 		}
+		return title, parsed.Year, true
+	}
+	return parsed.Title, parsed.Year, false
+}
+
+func (s *Scanner) createItem(ctx context.Context, lib library, rel, hash string, size int64, probe *Probe, probeErr error) (int64, error) {
+	title, year, episode := nameTitle(rel)
+	titleSrc := "filename"
+	kind, kindSrc := lib.defaultKind, "folder"
+	if episode {
+		kind, kindSrc = "episode", "filename"
 	}
 	if probe != nil && usableEmbeddedTitle(probe.Title) {
 		title, titleSrc = probe.Title, "embedded"
@@ -393,7 +478,7 @@ func (s *Scanner) createItem(ctx context.Context, lib library, rel, hash string,
 	err := db.Tx(ctx, s.db, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO items(content_hash, size_bytes, title, year, kind) VALUES (?, ?, ?, ?, ?)`,
-			hash, size, title, nullInt(parsed.Year), kind)
+			hash, size, title, nullInt(year), kind)
 		if err != nil {
 			return err
 		}
@@ -402,7 +487,7 @@ func (s *Scanner) createItem(ctx context.Context, lib library, rel, hash string,
 		}
 
 		sources := map[string]string{"title": titleSrc, "kind": kindSrc}
-		if parsed.Year > 0 {
+		if year > 0 {
 			sources["year"] = "filename"
 		}
 		for field, src := range sources {

@@ -25,18 +25,58 @@ var (
 		`bluray|blu-ray|bdrip|brrip|web-?dl|web-?rip|webrip|hdtv|dvdrip|hdrip|remux|` +
 		`aac|ac3|dts|ddp?5\.1|atmos|proper|repack|extended|unrated)\b`)
 	spaces = regexp.MustCompile(`\s+`)
+
+	// Names video downloaders give files: "YTDown.com_YouTube_Media_<video
+	// id>_Title_002_720p", "Title-SnapYT.App", "y2mate.com - Title", and
+	// "(1)" on a second copy.
+	downloaderPrefix = regexp.MustCompile(`(?i)^(?:ytdown\.com_youtube_media_[a-z0-9_-]{11}_|` +
+		`(?:y2mate\.(?:com|is)|ssyoutube\.com|savefrom\.net|yt1s\.com|ytmp3\.cc|snapyt\.app)\s*[-_ ]\s*)`)
+	downloaderSuffix = regexp.MustCompile(`(?i)\s*\(\d{1,2}\)$|_\d{3}_(?:\d{3,4}p|4k)$|(?:[-_ ]+snapyt)?\.app$|[-_ ]+savefrom\.net$`)
+	// Words joined by dashes, "The-Last-Driver" (not "Spider-Man"), with
+	// apostrophes the downloader turned into dashes: "World-s", "Don-t".
+	dashedWords = regexp.MustCompile(`\S+(?:-\S+){2,}`)
+	dashedS     = regexp.MustCompile(`([A-Za-z])-s-`)
+	dashedNT    = regexp.MustCompile(`([A-Za-z])n-t-`)
+	officialRe  = regexp.MustCompile(`(?i)\(\s*official[^)]*\)|\bofficial\s+(?:music\s+|lyrics?\s+)?(?:video|audio)\b`)
+	// What upload sites put after a title: "Title - Latest Yoruba Movie 2025
+	// <cast>", "Title | DW Documentary". The title ends at the first of
+	// these; a year in the rest still counts. "Latest" only when a movie or
+	// a year follows soon, or it ends the name.
+	paddingRe = regexp.MustCompile(`(?i)\s[|｜]|` +
+		`\blatest\b(?:(?:\s+\S+){0,3}?\s+(?:movies?|film|(?:19|20)\d{2})\b|\s*\)?$)|` +
+		`\bfull\s+(?:yoruba\s+|nigerian\s+|nollywood\s+|ghanaian\s+)?movies?\b|` +
+		`\b(?:yoruba|nigerian|nollywood|ghanaian)\s+movies?\b|` +
+		`\b(?:full|dw|bbc|free)\s+documentar(?:y|ies)\b|\bexclusive\s*$`)
 )
 
-// cleanName returns a file's name without extension and bracketed tags,
-// with dots and underscores read as spaces when they separate words.
+// cleanName returns a file's name without extension, bracketed tags and
+// what downloaders add, with dots, underscores and dashes read as spaces
+// when they separate words.
 func cleanName(path string) string {
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	for range 3 { // "Title_002_720p(1)": suffixes stack
+		name = downloaderSuffix.ReplaceAllString(name, "")
+	}
+	name = downloaderPrefix.ReplaceAllString(name, "")
+	name = officialRe.ReplaceAllString(name, " ")
 	name = bracketed.ReplaceAllString(name, " ")
 	// "Some.Movie.Name.2010" style: dots/underscores act as spaces.
 	if !strings.Contains(name, " ") || strings.Count(name, ".")+strings.Count(name, "_") > strings.Count(name, " ") {
 		name = strings.NewReplacer(".", " ", "_", " ").Replace(name)
 	}
-	return name
+	if !strings.Contains(name, " ") { // "Bola-Sunmisola"
+		name = undash(name)
+	}
+	name = dashedWords.ReplaceAllStringFunc(name, undash)
+	return spaces.ReplaceAllString(strings.TrimSpace(name), " ")
+}
+
+// undash reads the dashes in "World-s-Most-Advanced" as spaces, and the
+// ones that stood for apostrophes as apostrophes.
+func undash(w string) string {
+	w = dashedS.ReplaceAllString(w+"-", "$1's-")
+	w = dashedNT.ReplaceAllString(w, "${1}n't-")
+	return strings.TrimSpace(strings.ReplaceAll(w, "-", " "))
 }
 
 // ParseFilename guesses a title, year and episode numbers from a file path.
@@ -61,19 +101,28 @@ func ParseFilename(path string) Parsed {
 		// Keep the episode marker in the title so episodes stay distinguishable.
 		cut = min(cut, m[1])
 	}
+	end := cut // where the title ends
+	if m := paddingRe.FindStringIndex(name[:cut]); m != nil && m[0] > 0 {
+		end = m[0]
+	}
 	// Pad so a year at the very start/end still has a delimiter around it.
-	padded := " " + name[:cut] + " "
+	padded := " " + name[:end] + " "
 	if ms := yearRe.FindAllStringSubmatchIndex(padded, -1); len(ms) > 0 {
 		// Use the last year-like number: "2001 A Space Odyssey (1968)" -> 1968.
 		m := ms[len(ms)-1]
 		start := m[2] - 1 // back to unpadded coordinates
 		if start > 0 {    // a year alone is more likely the title, e.g. "1917"
 			p.Year, _ = strconv.Atoi(padded[m[2]:m[3]])
-			cut = min(cut, start)
+			end = min(end, start)
+		}
+	} else if end < cut {
+		// "Title - Latest Yoruba Movie 2025": the year is in the padding.
+		if m := yearRe.FindStringSubmatch(" " + name[end:cut] + " "); m != nil {
+			p.Year, _ = strconv.Atoi(m[1])
 		}
 	}
 
-	title := strings.Trim(name[:cut], " -–(")
+	title := strings.Trim(name[:end], " -–(|｜;,")
 	title = spaces.ReplaceAllString(title, " ")
 	if title == "" {
 		title = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))

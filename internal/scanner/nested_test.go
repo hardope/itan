@@ -118,3 +118,61 @@ func TestNestedLibrary(t *testing.T) {
 		t.Errorf("%d files present, want 4", present)
 	}
 }
+
+// Titles that came from file names follow the names (when a file is
+// renamed, or reading names improves); titles someone set don't.
+func TestRetitle(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"YTDown.com_YouTube_Media_abcdefghijk_Tesla-Before-Elon-The-Untold-Story_001_1080p.mp4": "tesla",
+		"Edited-Latest-SnapYT.App.mp4": "edited",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.ExecContext(ctx, `INSERT INTO libraries(id, name, root_path) VALUES (1, 'Main', ?)`, root); err != nil {
+		t.Fatal(err)
+	}
+	sc := New(d, filepath.Join(root, "no-ffprobe"))
+	scan := func() {
+		t.Helper()
+		d.ExecContext(ctx, `UPDATE files SET last_seen_at = last_seen_at - 60`)
+		if err := sc.Scan(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	title := func(content string) string {
+		t.Helper()
+		var title string
+		hash, _, err := ContentHash(filepath.Join(root, map[string]string{
+			"tesla": "Tesla Before Elon.mp4", "edited": "Edited-Latest-SnapYT.App.mp4"}[content]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.QueryRowContext(ctx, `SELECT title FROM items WHERE content_hash = ?`, hash).Scan(&title)
+		return title
+	}
+	scan()
+	// As if an older version had named them, and someone edited one.
+	d.ExecContext(ctx, `UPDATE items SET title = 'YTDown com YouTube Media abcdefghijk Tesla'`)
+	d.ExecContext(ctx, `UPDATE item_field_sources SET source = 'user'
+		WHERE field = 'title' AND item_id = (SELECT item_id FROM files WHERE rel_path LIKE 'Edited%')`)
+	if err := os.Rename(filepath.Join(root, "YTDown.com_YouTube_Media_abcdefghijk_Tesla-Before-Elon-The-Untold-Story_001_1080p.mp4"),
+		filepath.Join(root, "Tesla Before Elon.mp4")); err != nil {
+		t.Fatal(err)
+	}
+	scan()
+	if got := title("tesla"); got != "Tesla Before Elon" {
+		t.Errorf("title from the file name: %q, want it to follow the rename", got)
+	}
+	if got := title("edited"); got != "YTDown com YouTube Media abcdefghijk Tesla" {
+		t.Errorf("edited title changed to %q", got)
+	}
+}
