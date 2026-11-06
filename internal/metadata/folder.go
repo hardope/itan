@@ -43,6 +43,7 @@ type FolderResult struct {
 	Changes  int  // fields and tags the file changed here
 	Written  bool // the file was rewritten
 	Migrated int  // per-video sidecars folded in and removed
+	Damaged  bool // the file couldn't be read and was moved aside
 }
 
 type folderLib struct {
@@ -217,7 +218,9 @@ func WriteFolderFile(ctx context.Context, database *sql.DB, libraryID int64) (Fo
 //  2. If the library keeps a file: fold in per-video sidecars from earlier
 //     versions, write the file, then remove those sidecars.
 //
-// A file that can't be read is left alone rather than overwritten.
+// A file that can't be read is left alone rather than overwritten, unless
+// it's damaged (not JSON at all) and the library keeps a file: then it's
+// kept aside as .itan.json.damaged and a new one written.
 func SyncFolderFile(ctx context.Context, database *sql.DB, libraryID int64) (FolderResult, error) {
 	return syncFolder(ctx, database, libraryID, true)
 }
@@ -241,6 +244,18 @@ func syncFolder(ctx context.Context, database *sql.DB, libraryID int64, withSide
 	case err == nil:
 		if seen, _ := seenFolderFile(ctx, database, fl.id); seen != digest(current) {
 			lib, err := ReadLibrary(bytes.NewReader(current))
+			if errors.Is(err, ErrUnreadable) && fl.keep {
+				// Nothing in it can be read, and the library has every
+				// edit: keep it for a look, and write a new one.
+				aside := fl.path() + ".damaged"
+				if err := os.Rename(fl.path(), aside); err != nil {
+					return res, fmt.Errorf("%s: damaged, and can't be moved aside: %w", fl.path(), err)
+				}
+				log.Printf("%s couldn't be read (%v); kept it as %s and writing a new one", fl.path(), err, filepath.Base(aside))
+				res.Damaged = true
+				current = nil
+				break
+			}
 			if err != nil {
 				return res, fmt.Errorf("%s: %w", fl.path(), err)
 			}

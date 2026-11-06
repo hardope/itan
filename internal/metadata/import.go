@@ -49,6 +49,9 @@ func (r *Report) warn(format string, args ...any) {
 
 // ReadLibrary decodes an export file (plain or gzipped JSON) and checks its
 // format and major version.
+// ErrUnreadable is a file that isn't JSON, let alone an export.
+var ErrUnreadable = errors.New("not a valid export file")
+
 func ReadLibrary(r io.Reader) (*Library, error) {
 	br := bufio.NewReader(r)
 	if magic, _ := br.Peek(2); len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
@@ -63,7 +66,12 @@ func ReadLibrary(r io.Reader) (*Library, error) {
 	}
 	var lib Library
 	if err := json.NewDecoder(r).Decode(&lib); err != nil {
-		return nil, fmt.Errorf("not a valid export file: %w", err)
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) {
+			return nil, fmt.Errorf("not a valid export file: %w", err)
+		}
+		// Not JSON at all: cut short, or bytes a damaged drive put there.
+		return nil, fmt.Errorf("%w: %v", ErrUnreadable, err)
 	}
 	if lib.Format != libraryFormat {
 		return nil, fmt.Errorf("not a itan library export (format %q)", lib.Format)

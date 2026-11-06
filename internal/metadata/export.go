@@ -320,9 +320,24 @@ func BuildSidecar(ctx context.Context, q db.Execer, itemID int64) (*Sidecar, err
 	return &Sidecar{Format: sidecarFormat, Version: formatVersion, Item: it, TagDefs: defs}, nil
 }
 
+// writeFileAtomic replaces path with data, so a reader sees the old file
+// or the new one, never part of one. The data reaches the disk before it
+// replaces anything: a drive unplugged mid-write keeps the old file.
 func writeFileAtomic(path string, data []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {

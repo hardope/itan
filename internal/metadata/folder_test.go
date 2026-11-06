@@ -265,3 +265,55 @@ func TestFolderFileCoversLibrariesInside(t *testing.T) {
 		t.Errorf("without a Music library: title = %v", v)
 	}
 }
+
+// A folder file a drive damaged (here, random bytes) is moved aside and
+// written again from the library, when the library keeps one. One that's
+// fine but not ours, or in a library that doesn't keep a file, stays.
+func TestDamagedFolderFile(t *testing.T) {
+	root := t.TempDir()
+	d := openDB(t)
+	lib := addLibrary(t, d, "Main", root)
+	id := addItem(t, d, lib, "ph1:aaaa", 100, "clip.mp4", "clip")
+	setField(t, d, id, "title", "Beach Day", "user", 1000)
+	path := filepath.Join(root, FolderFileName)
+	garbage := []byte{0x5f, 0xb4, 0x5d, 0x5e, 0xcf, 0xdd, 0x7f, 0xab}
+	write := func(b []byte) {
+		t.Helper()
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Not keeping a file: never written to.
+	write(garbage)
+	if _, err := SyncFolderFile(ctx, d, lib); err == nil {
+		t.Error("a damaged file in a library that doesn't keep one: no error")
+	}
+	if b, _ := os.ReadFile(path); string(b) != string(garbage) {
+		t.Error("a library that doesn't keep a file changed it")
+	}
+
+	// Valid, but some other program's: left alone.
+	exec(t, d, `UPDATE libraries SET write_sidecars = 1 WHERE id = ?`, lib)
+	other := []byte(`{"format": "something-else"}`)
+	write(other)
+	if _, err := SyncFolderFile(ctx, d, lib); err == nil {
+		t.Error("someone else's file: no error")
+	}
+	if b, _ := os.ReadFile(path); string(b) != string(other) {
+		t.Error("someone else's file was overwritten")
+	}
+
+	// Damaged: kept aside, and a new one written with the edit.
+	write(garbage)
+	res := mustSync(t, d, lib)
+	if !res.Damaged || !res.Written {
+		t.Errorf("result %+v, want damaged and written", res)
+	}
+	if b, _ := os.ReadFile(path + ".damaged"); string(b) != string(garbage) {
+		t.Error("the damaged file wasn't kept aside")
+	}
+	if got := readFolder(t, root); len(got.Items) != 1 || got.Items[0].Fields["title"].Value != "Beach Day" {
+		t.Errorf("new folder file: %+v", got.Items)
+	}
+}
