@@ -176,3 +176,96 @@ func TestRetitle(t *testing.T) {
 		t.Errorf("edited title changed to %q", got)
 	}
 }
+
+// A library added while a scan runs (asking for a scan, as adding one in
+// Settings does) is scanned before that scan finishes, not at the next.
+func TestLibraryAddedDuringScan(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	first, second := t.TempDir(), t.TempDir()
+	os.WriteFile(filepath.Join(first, "a.mp4"), []byte("a"), 0o644)
+	os.WriteFile(filepath.Join(second, "b.mp4"), []byte("b"), 0o644)
+	d.ExecContext(ctx, `INSERT INTO libraries(id, name, root_path) VALUES (1, 'First', ?)`, first)
+
+	sc := New(d, filepath.Join(first, "no-ffprobe"))
+	sc.onLibrary = func(name string) {
+		if name != "First" {
+			return
+		}
+		sc.onLibrary = nil
+		d.ExecContext(ctx, `INSERT INTO libraries(id, name, root_path) VALUES (2, 'Second', ?)`, second)
+		if err := sc.Scan(ctx); err != ErrRunning {
+			t.Errorf("scan during a scan: %v, want ErrRunning", err)
+		}
+	}
+	if err := sc.Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	d.QueryRowContext(ctx, `SELECT COUNT(*) FROM files WHERE library_id = 2`).Scan(&n)
+	if n != 1 {
+		t.Errorf("the library added during the scan has %d files, want 1", n)
+	}
+	if st := sc.Status(); st.Running {
+		t.Error("still running")
+	}
+}
+
+// When a library inside another takes over its folder, the tag the outer
+// one gave for the folder's name goes; tags people added stay.
+func TestHandOverDropsFolderTag(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "Music"), 0o755)
+	os.WriteFile(filepath.Join(root, "Music", "a.mp4"), []byte("a"), 0o644)
+	os.WriteFile(filepath.Join(root, "Music", "b.mp4"), []byte("b"), 0o644)
+	d.ExecContext(ctx, `INSERT INTO libraries(id, name, root_path) VALUES (1, 'Main', ?)`, root)
+	sc := New(d, filepath.Join(root, "no-ffprobe"))
+	if err := sc.Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tags := func(name string) []string {
+		t.Helper()
+		rows, err := d.QueryContext(ctx, `
+			SELECT t.slug || '/' || it.source FROM files f JOIN item_tags it ON it.item_id = f.item_id
+			  JOIN tags t ON t.id = it.tag_id WHERE f.rel_path = ? AND it.removed = 0 ORDER BY 1`, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var s string
+			rows.Scan(&s)
+			out = append(out, s)
+		}
+		return out
+	}
+	if got := tags(filepath.Join("Music", "a.mp4")); len(got) != 1 || got[0] != "music/folder" {
+		t.Fatalf("before: %v", got)
+	}
+	// Someone tags b "music" themselves.
+	d.ExecContext(ctx, `UPDATE item_tags SET source = 'user' WHERE item_id =
+		(SELECT item_id FROM files WHERE rel_path = ?)`, filepath.Join("Music", "b.mp4"))
+
+	d.ExecContext(ctx, `INSERT INTO libraries(id, name, root_path) VALUES (2, 'Music', ?)`, filepath.Join(root, "Music"))
+	d.ExecContext(ctx, `UPDATE files SET last_seen_at = last_seen_at - 60`)
+	if err := sc.Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := tags("a.mp4"); len(got) != 0 {
+		t.Errorf("a in the Music library still tagged %v", got)
+	}
+	if got := tags("b.mp4"); len(got) != 1 || got[0] != "music/user" {
+		t.Errorf("b's own tag: %v", got)
+	}
+}

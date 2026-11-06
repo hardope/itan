@@ -224,11 +224,9 @@ func (s *Server) scanStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.scanner.Status())
 }
 
+// startScan starts a scan, or, if one is running, has it go round again
+// when it's done.
 func (s *Server) startScan(w http.ResponseWriter, r *http.Request) {
-	if s.scanner.Status().Running {
-		writeError(w, http.StatusConflict, "scan already running")
-		return
-	}
 	s.scanInBackground()
 	writeJSON(w, http.StatusAccepted, s.scanner.Status())
 }

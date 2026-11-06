@@ -45,6 +45,9 @@ type Scanner struct {
 
 	mu     sync.Mutex
 	status Status
+	again  bool // a scan was asked for during this one: go round again
+
+	onLibrary func(name string) // tests: called as each library's scan starts
 }
 
 func New(database *sql.DB, ffprobe string) *Scanner {
@@ -84,23 +87,40 @@ type library struct {
 
 // Scan scans every enabled library, those inside other libraries first.
 // Only one scan runs at a time.
+// Scan scans every library. While one scan runs, another returns
+// ErrRunning, and the running one goes round again when it's done, so
+// what changed meanwhile (a library added, say) isn't left for later.
 func (s *Scanner) Scan(ctx context.Context) error {
 	s.mu.Lock()
 	if s.status.Running {
+		s.again = true
 		s.mu.Unlock()
 		return ErrRunning
 	}
-	s.status = Status{Running: true, StartedAt: time.Now(), Errors: []string{}}
-	s.mu.Unlock()
-	defer s.update(func(st *Status) {
-		st.Running, st.Current, st.FinishedAt = false, "", time.Now()
-	})
+	for {
+		s.status = Status{Running: true, StartedAt: time.Now(), Errors: []string{}}
+		s.again = false
+		s.mu.Unlock()
+		err := s.scan(ctx)
+		s.mu.Lock()
+		if !s.again || err != nil || ctx.Err() != nil {
+			s.status.Running, s.status.Current, s.status.FinishedAt = false, "", time.Now()
+			s.again = false
+			s.mu.Unlock()
+			return err
+		}
+	}
+}
 
+func (s *Scanner) scan(ctx context.Context) error {
 	libs, err := s.libraries(ctx)
 	if err != nil {
 		return err
 	}
 	for _, lib := range libs {
+		if s.onLibrary != nil {
+			s.onLibrary(lib.name)
+		}
 		if err := s.scanLibrary(ctx, lib); err != nil {
 			s.addError("library %q: %v", lib.name, err)
 		}
@@ -322,38 +342,56 @@ func (s *Scanner) handOver(ctx context.Context, lib library, nested []db.Nested)
 	if len(nested) == 0 {
 		return 0, nil
 	}
-	var ids []int64
-	rows, err := s.db.QueryContext(ctx, `SELECT id, rel_path FROM files WHERE library_id = ?`, lib.id)
+	type moved struct {
+		file, item int64
+		folder     string // the inner library's folder, relative to lib's
+	}
+	var files []moved
+	rows, err := s.db.QueryContext(ctx, `SELECT id, item_id, rel_path FROM files WHERE library_id = ?`, lib.id)
 	if err != nil {
 		return 0, err
 	}
 	for rows.Next() {
-		var id int64
+		var m moved
 		var rel string
-		if err := rows.Scan(&id, &rel); err != nil {
+		if err := rows.Scan(&m.file, &m.item, &rel); err != nil {
 			rows.Close()
 			return 0, err
 		}
 		for _, n := range nested {
 			if _, ok := db.Within(n.Rel, rel); ok {
-				ids = append(ids, id)
+				m.folder = n.Rel
+				files = append(files, m)
 				break
 			}
 		}
 	}
 	rows.Close()
-	if err := rows.Err(); err != nil || len(ids) == 0 {
+	if err := rows.Err(); err != nil || len(files) == 0 {
 		return 0, err
 	}
 	err = db.Tx(ctx, s.db, func(tx *sql.Tx) error {
-		for _, id := range ids {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, id); err != nil {
+		for _, m := range files {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, m.file); err != nil {
+				return err
+			}
+			// Tags lib gave the video for the folder's name ("Music") go:
+			// folder tags come from folders inside the library a video is in.
+			for _, t := range FolderTags(filepath.Join(m.folder, "video")) {
+				ns, slug, _ := db.ParseTagRef(t)
+				if _, err := tx.ExecContext(ctx, `
+					DELETE FROM item_tags WHERE item_id = ? AND source = 'folder' AND removed = 0
+					   AND tag_id = (SELECT id FROM tags WHERE namespace = ? AND slug = ?)`, m.item, ns, slug); err != nil {
+					return err
+				}
+			}
+			if err := db.ReindexItem(ctx, tx, m.item); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-	return len(ids), err
+	return len(files), err
 }
 
 func (s *Scanner) scanFile(ctx context.Context, lib library, path, rel string, d fs.DirEntry) error {
