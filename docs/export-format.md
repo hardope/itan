@@ -112,7 +112,9 @@ Namespaces: `genre`, `tag`, `person`, `mood`, `source`.
 ```
 
 Exportable `fields` keys: `title`, `sort_title`, `original_title`,
-`description`, `year`, `release_date`, `kind`, `rating`, `language`.
+`description`, `year`, `release_date`, `kind`, `rating`, `language`,
+`thumbnail_at_ms` (the moment chosen for the thumbnail, in milliseconds;
+absent means 10% in).
 
 `source` is one of `filename`, `folder`, `embedded`, `scraper` or `user`.
 Exporters may leave out fields that are empty or that the filename can
@@ -174,7 +176,8 @@ Rules:
 - Written when the library has `write_sidecars` enabled ("Keep edits in this
   folder"), a couple of seconds after edits (to videos in the folder or in a
   library inside it), and after imports and scans.
-  Written atomically (temporary file, then rename).
+  Written atomically: a temporary file, flushed to the disk, then renamed
+  over the old one, so a drive unplugged mid-write keeps the old file.
 - Read during each scan if its contents changed since this install last read
   or wrote it (FAT drives keep modification times to 2 seconds, so they
   aren't used), whether or not the library writes one. It is imported with
@@ -185,8 +188,11 @@ Rules:
   edits made on each come together.
 - Adding a folder that already has a folder file turns on writing it, so it
   stays in sync.
-- A file that can't be read (damaged, or a newer major version) is reported
-  and never overwritten.
+- A file in a newer major version, or valid JSON that isn't a library
+  export, is reported and never overwritten. A damaged file (not JSON at
+  all: cut short, or bytes a damaged drive put there) is moved aside as
+  `.itan.json.damaged` and written again, if the library writes one; the
+  library has every edit it held.
 - When a library starts keeping a folder file, per-video sidecars in it are
   imported first, then deleted once the folder file is written. Files ending
   in `.meta.json` that aren't Itan sidecars are left alone.

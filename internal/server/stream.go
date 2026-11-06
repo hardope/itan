@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hardope/itan/internal/config"
+	"github.com/hardope/itan/internal/db"
 	"github.com/hardope/itan/internal/proc"
 )
 
@@ -150,11 +151,21 @@ func (s *Server) setThumbnail(w http.ResponseWriter, r *http.Request) {
 			at = sql.NullInt64{Int64: int64(next * float64(duration.Int64)), Valid: true}
 		}
 	}
-	if _, err := s.db.ExecContext(r.Context(),
-		`UPDATE items SET thumbnail_at_ms = ? WHERE id = ?`, at, id); err != nil {
+	err := db.Tx(r.Context(), s.db, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(r.Context(), `UPDATE items SET thumbnail_at_ms = ? WHERE id = ?`, at, id); err != nil {
+			return err
+		}
+		// An edit like any other: it goes in backups and folder files.
+		_, err := tx.ExecContext(r.Context(), `
+			INSERT INTO item_field_sources(item_id, field, source, updated_at) VALUES (?, 'thumbnail_at_ms', 'user', unixepoch())
+			ON CONFLICT(item_id, field) DO UPDATE SET source = 'user', updated_at = unixepoch()`, id)
+		return err
+	})
+	if err != nil {
 		serverError(w, r, err)
 		return
 	}
+	s.folders.itemChanged(id)
 	s.thumbs.forget(hash)
 	if _, err := s.thumbnailFor(r.Context(), id); err != nil {
 		if errors.Is(err, errNoThumb) || errors.Is(err, sql.ErrNoRows) { // no frame, or no file
@@ -208,14 +219,21 @@ func newThumbnailer(cfg *config.Config) *thumbnailer {
 
 var errNoThumb = errors.New("thumbnail unavailable")
 
-func (t *thumbnailer) path(hash string) string {
-	return filepath.Join(t.dir, strings.ReplaceAll(hash, ":", "_")+"-w640.jpg")
+// path is where the thumbnail taken at atMS (0: the default moment) is
+// kept. Each moment has its own file, so a moment chosen elsewhere and
+// imported shows without anything to clear.
+func (t *thumbnailer) path(hash string, atMS int64) string {
+	name := strings.ReplaceAll(hash, ":", "_")
+	if atMS > 0 {
+		name += fmt.Sprintf("-at%d", atMS)
+	}
+	return filepath.Join(t.dir, name+"-w640.jpg")
 }
 
 // get returns the thumbnail for hash, taken from src at atMS (or 10% in
 // when that's 0).
 func (t *thumbnailer) get(ctx context.Context, hash, src string, durationMS, atMS int64) (string, error) {
-	out := t.path(hash)
+	out := t.path(hash, atMS)
 	if _, err := os.Stat(out); err == nil {
 		return out, nil
 	}
@@ -255,12 +273,15 @@ func (t *thumbnailer) get(ctx context.Context, hash, src string, durationMS, atM
 	return out, nil
 }
 
-// forget removes hash's thumbnail, and that it failed, if it did.
+// forget removes hash's thumbnails, and that it failed, if it did.
 func (t *thumbnailer) forget(hash string) {
 	t.mu.Lock()
 	delete(t.failed, hash)
 	t.mu.Unlock()
-	os.Remove(t.path(hash))
+	old, _ := filepath.Glob(filepath.Join(t.dir, strings.ReplaceAll(hash, ":", "_")+"-*.jpg"))
+	for _, f := range old {
+		os.Remove(f)
+	}
 }
 
 // clear removes every thumbnail and every failure, returning how many

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -40,6 +41,21 @@ func TestThumbnails(t *testing.T) {
 	call(t, c, "POST", url, `{"at_ms": 12345}`)
 	if got := at(); got != int64(12345) {
 		t.Errorf("frame from the player: %v", got)
+	}
+	// A chosen frame is an edit: backups (and folder files) carry it.
+	_, body := call(t, c, "GET", srv.URL+"/api/export", "")
+	var export struct {
+		Items []struct {
+			Fields map[string]struct {
+				Value  any
+				Source string
+			}
+		}
+	}
+	json.Unmarshal([]byte(body), &export)
+	if len(export.Items) != 1 || export.Items[0].Fields["thumbnail_at_ms"].Value != float64(12345) ||
+		export.Items[0].Fields["thumbnail_at_ms"].Source != "user" {
+		t.Errorf("export doesn't have the chosen frame: %+v", export.Items)
 	}
 	call(t, c, "POST", url, `{"at_ms": 500000}`)
 	if got := at(); got != int64(99999) {

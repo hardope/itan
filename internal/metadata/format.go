@@ -145,6 +145,7 @@ type pendingState struct {
 var exportFields = []string{
 	"title", "sort_title", "original_title", "description",
 	"year", "release_date", "kind", "rating", "language",
+	"thumbnail_at_ms", // the frame chosen for the thumbnail
 }
 
 var sourcePriority = map[string]int{
