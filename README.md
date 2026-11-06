@@ -222,6 +222,10 @@ tap the left or right of the video to skip 10 seconds.
 2. **Detect**: guesses title, year and episode from the file name, turns
    folders into tags, and reads resolution, codecs, HDR and tracks with
    ffprobe. It also decides whether the browser can play the file directly.
+   Names from video downloaders and upload sites are cleaned up:
+   `YTDown.com_YouTube_Media_<id>_THE-LAST-DRIVER-LATEST-YORUBA-MOVIE-2026-<cast>_002_720p.mp4`
+   becomes "THE LAST DRIVER" (2026). Titles taken from file names follow the
+   file when it's renamed; titles you edit never change.
 3. **Serve**: files the browser can play are served as they are, with HTTP
    range requests, so seeking is instant and the server does almost no work.
    Everything else is **remuxed**: ffmpeg repackages it into HLS segments with
@@ -339,7 +343,9 @@ ways. Both are described in [docs/export-format.md](docs/export-format.md).
 | `GET /api/info` | Addresses other devices on the network can use |
 | `GET /api/recommendations?limit=` | Home page rows: `{"shelves": [{id, title, items}]}`, each item with a `reason` |
 | `GET /api/items/{id}/similar?limit=` | More like this |
-| `GET /api/items/{id}/thumbnail` | JPEG, generated on first request |
+| `GET /api/items/{id}/thumbnail` | JPEG, generated on first request (10% in, or the frame chosen for it) |
+| `POST /api/items/{id}/thumbnail` | New thumbnail: `{"at_ms": 120000}` for that frame, `{}` for another moment |
+| `POST /api/thumbnails/regenerate` | Make every thumbnail again as it's next shown; chosen frames are kept |
 | `GET /api/tags` | Tags with item counts |
 | `GET/POST /api/libraries`, `PATCH/DELETE /api/libraries/{id}` | Manage folders; PATCH sets `write_sidecars` (keep `.itan.json`), `folder_tags`, `default_kind` |
 | `GET /api/export?history=1&gzip=1` | Download all metadata |
@@ -396,8 +402,8 @@ GitHub Actions then puts the command for each platform
 source of the ffmpeg they include on the release page, and the Docker image
 on `ghcr.io/hardope/itan`. Tags like `v0.2.0-rc.1` become pre-releases.
 Every push to `main` runs the tests on Linux, macOS and Windows and builds
-everything; the apps it builds stay on the run's page for two weeks, to try
-before a release.
+everything; the apps and the command for each system stay on the run's page
+for two weeks, to try before a release.
 
 ## License
 
