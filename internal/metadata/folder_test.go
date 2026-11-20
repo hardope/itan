@@ -317,3 +317,48 @@ func TestDamagedFolderFile(t *testing.T) {
 		t.Errorf("new folder file: %+v", got.Items)
 	}
 }
+
+// Playlists stay out of folder files, both ways: they mix videos from
+// several drives, and a video taken out of one on this computer would come
+// back from the other computer's file. Series still travel.
+func TestFolderFileLeavesOutPlaylists(t *testing.T) {
+	root := t.TempDir()
+	a := openDB(t)
+	libA := addLibrary(t, a, "Main", root)
+	exec(t, a, `UPDATE libraries SET write_sidecars = 1 WHERE id = ?`, libA)
+	clip := addItem(t, a, libA, "ph1:aaaa", 100, "clip.mp4", "clip")
+	setField(t, a, clip, "title", "Beach Day", "user", 1000)
+	exec(t, a, `INSERT INTO collections(uid, kind, title) VALUES ('pl', 'playlist', 'Summer')`)
+	exec(t, a, `INSERT INTO collections(uid, kind, title) VALUES ('sr', 'series', 'Holidays')`)
+	exec(t, a, `INSERT INTO collections(uid, kind, title, parent_id, position) VALUES ('se', 'season', 'Season 1', 2, 1)`)
+	exec(t, a, `INSERT INTO collection_items(collection_id, item_id, position) VALUES (1, ?, 1), (3, ?, 1)`, clip, clip)
+
+	mustSync(t, a, libA)
+	file := readFolder(t, root)
+	var kinds []string
+	for _, c := range file.Collections {
+		kinds = append(kinds, c.Kind)
+	}
+	if strings.Join(kinds, ",") != "series,season" {
+		t.Fatalf("folder file collections = %v, want the series and season only", kinds)
+	}
+
+	// A file that has one anyway (written by hand, or by another version)
+	// doesn't bring it in.
+	file.Collections = append(file.Collections, Collection{UID: "pl", Kind: "playlist", Title: "Summer",
+		Items: []CollectionItem{{Hash: "ph1:aaaa"}}})
+	data, _ := json.Marshal(file)
+	if err := os.WriteFile(filepath.Join(root, FolderFileName), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := openDB(t)
+	libB := addLibrary(t, b, "Drive", root)
+	addItem(t, b, libB, "ph1:aaaa", 100, "clip.mp4", "clip")
+	mustSync(t, b, libB)
+	var playlists, series int
+	b.QueryRowContext(ctx, `SELECT COUNT(*) FROM collections WHERE kind = 'playlist'`).Scan(&playlists)
+	b.QueryRowContext(ctx, `SELECT COUNT(*) FROM collections WHERE kind = 'series'`).Scan(&series)
+	if playlists != 0 || series != 1 {
+		t.Errorf("after reading the file: %d playlists, %d series", playlists, series)
+	}
+}

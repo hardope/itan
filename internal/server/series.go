@@ -186,12 +186,14 @@ func (s *Server) getSeries(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	d.Next, d.NextVerb = nextEpisode(episodes, lastPlayed)
+	d.Next, d.NextVerb = nextInOrder(episodes, lastPlayed)
 	writeJSON(w, http.StatusOK, d)
 }
 
-// nextEpisode picks what to play from episodes in order.
-func nextEpisode(episodes []*itemSummary, lastPlayed map[int64]int64) (*itemSummary, string) {
+// nextInOrder picks what to play from a series' episodes or a playlist's
+// videos, in order: the most recently played one if it isn't finished, else
+// the one after it.
+func nextInOrder(episodes []*itemSummary, lastPlayed map[int64]int64) (*itemSummary, string) {
 	if len(episodes) == 0 {
 		return nil, ""
 	}

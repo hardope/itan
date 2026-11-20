@@ -139,6 +139,9 @@ will add the tag back.
 }
 ```
 
+A playlist (`"kind": "playlist"`, no parent) lists its videos in playback
+order, with positions 1, 2, 3...
+
 ### Profile object (optional)
 
 ```jsonc
@@ -164,6 +167,10 @@ export) with these differences:
 - Only the videos in that folder that have edits (user-set fields, added tags,
   removed tags). No watch history or profiles: a shared drive shouldn't tell
   everyone what you watched.
+- No playlists, and playlists in a file are ignored when reading it. A
+  playlist often mixes videos from several drives, and collections merge by
+  adding what's missing, so a video taken out of a playlist on one install
+  would come back from another install's file. Library exports carry them.
 - `paths` are relative to the folder. The library name in them is ignored
   when reading.
 - Videos in libraries inside the folder are included too, with paths

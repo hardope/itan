@@ -124,6 +124,14 @@ func importWith(ctx context.Context, database *sql.DB, lib *Library, opts import
 			return nil, err
 		}
 		im.folder = append([]db.Nested{{ID: opts.libraryID}}, nested...)
+		folderLib := *lib
+		folderLib.Collections = nil
+		for _, c := range lib.Collections {
+			if folderCollection(c) {
+				folderLib.Collections = append(folderLib.Collections, c)
+			}
+		}
+		lib = &folderLib
 	}
 	if err := im.ensureTagDefs(); err != nil {
 		return nil, err

@@ -88,6 +88,11 @@ const ICONS = {
   stack: '<rect x="3" y="7.5" width="14" height="13" rx="2"/><path d="M7 4h11a3 3 0 0 1 3 3v10"/>',
   skipNext: '<path d="M5 5.5v13l9.5-6.5z" fill="currentColor" stroke="none"/><path d="M18.5 5.5v13"/>',
   devices: '<rect x="2" y="4" width="14" height="10" rx="1.5"/><path d="M6 18h6M9 14v4"/><rect x="18" y="8" width="4" height="12" rx="1"/>',
+  playlist: '<path d="M3 6h13M3 11h13M3 16h8"/><path d="M15 14.2v6.6a.6.6 0 0 0 .9.5l5.2-3.3a.6.6 0 0 0 0-1l-5.2-3.3a.6.6 0 0 0-.9.5z" fill="currentColor" stroke="none"/>',
+  listAdd: '<path d="M3 6h13M3 11h13M3 16h8M18 13v8M14 17h8"/>',
+  arrowUp: '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  arrowDown: '<path d="M12 5v14M6 13l6 6 6-6"/>',
+  minus: '<path d="M6 12h12"/>',
 };
 
 function icon(name, cls) {
@@ -423,10 +428,12 @@ const epLabel = (ref) => `S${ref.season} · E${ref.episode}`;
 const isPlaceholderTitle = (it) => /^Episode \d+$/.test(it.title);
 
 // poster returns a generated title card with the thumbnail fading in over it.
-function poster(it) {
-  const name = titleOf(it);
+function poster(it) { return cover(titleOf(it), thumbOf(it)); }
+
+function cover(name, src) {
   const fallback = h("div", { class: "poster-fallback", style: `--h:${hueFor(name)}` }, h("span", {}, name));
-  const img = h("img", { src: thumbOf(it), loading: "lazy", decoding: "async", alt: "" });
+  if (!src) return [fallback];
+  const img = h("img", { src, loading: "lazy", decoding: "async", alt: "" });
   img.addEventListener("load", () => img.classList.add("loaded"), { once: true });
   img.addEventListener("error", () => img.remove(), { once: true });
   return [fallback, img];
@@ -777,6 +784,11 @@ async function renderLibrary(params, ctx) {
 
 // ---------- item page ----------
 
+// The item page stays up from one video to the next (the next episode, the
+// next in a playlist, one from the side column): only what's about the
+// video changes, and the player loads the next one in place.
+let itemPage = null;
+
 async function renderItem(id, params, ctx) {
   let it;
   try {
@@ -784,14 +796,18 @@ async function renderItem(id, params, ctx) {
   } catch (e) {
     if (e.message !== "not found") throw e;
     if (ctx.stale()) return;
+    leavePage(); // the video before, if there was one
     app.replaceChildren(h("div", { class: "empty" }, art("film"), h("h2", {}, "This video isn't here anymore"),
       h("p", {}, "It may have been moved or deleted, or its folder was removed from the library."),
       h("div", { class: "actions" }, h("a", { class: "btn btn-primary", href: "#/" }, "Go home"))));
     return;
   }
   if (ctx.stale()) return;
-  document.title = `${it.title} · ${APP_NAME}`;
+  itemPage ||= itemView();
+  itemPage.show(it, params, ctx);
+}
 
+function itemView() {
   const warn = h("div", { class: "warn", hidden: true });
   // Medium player beside the side column by default; wide is remembered
   // in this browser.
@@ -803,16 +819,21 @@ async function renderItem(id, params, ctx) {
     store.set("player-wide", w ? "1" : "0");
     player.setWide(w);
   };
-  const player = createPlayer(it, warn, { autoplay: params.get("play") === "1", wide, onWide: () => setWide(!wide) });
+  const player = createPlayer(warn, { wide, onWide: () => setWide(!wide) });
+
+  let it = null, ctx = null, shown = 0;
+  let list = null;   // the playlist being played (?list=): {id, title, items, at}
+  let nextEp = null; // the episode after this one
+  let similar = [];
 
   // Save the resume point every 10s of playback, and on pause/leave.
   let lastSave = 0;
   const save = () => {
-    if (!player.started()) return; // just looking at the page isn't watching
+    if (!it || !player.started()) return; // just looking at the page isn't watching
     const pos = player.position();
     if (!pos) return;
     lastSave = Date.now();
-    fetch(`/api/items/${id}/progress`, {
+    fetch(`/api/items/${it.id}/progress`, {
       method: "POST", keepalive: true,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ position_ms: Math.round(pos * 1000) }),
@@ -821,32 +842,58 @@ async function renderItem(id, params, ctx) {
   player.video.addEventListener("timeupdate", () => { if (Date.now() - lastSave > 10000) save(); });
   player.video.addEventListener("pause", save);
   player.video.addEventListener("ended", save);
-  onLeave = () => { save(); player.destroy(); };
-  keyHandler = player.handleKey;
 
   // Each part redraws on its own, so edits never touch the player.
   const head = h("div", {});
   const desc = h("div", {});
+  const tagsBox = h("div", {});
+  const listSide = h("div", {});
   const episodes = h("div", {});
-  const similar = h("div", {});
-  let nextEp = null;
+  const similarSide = h("div", {});
+  const details = h("div", {});
+  let tags = null;
+  watch.append(
+    h("div", { class: "watch-player" }, player.el, warn),
+    h("div", { class: "watch-main" }, head, desc, tagsBox),
+    h("aside", { class: "watch-side" }, listSide, episodes, similarSide, details));
+
   const update = (next, redraw = true) => {
     const seriesChanged = JSON.stringify(next.series) !== JSON.stringify(it.series);
     it = next;
     document.title = `${it.title} · ${APP_NAME}`;
     player.setTitle(it.series ? `${it.series.title} · ${it.title}` : it.title);
     if (redraw) { drawHead(); drawDesc(); tags.draw(); }
-    if (seriesChanged) loadSeriesContext();
+    if (seriesChanged) loadSeries();
   };
   const edit = (field) => openEditor(it, update, field);
-  const tags = tagEditor(() => it, update);
+  const live = (token) => token === shown && !ctx.stale();
+
+  // What comes after this video: the next in the playlist being played,
+  // else the next episode (both start by themselves at the end), else
+  // something like it (offered at the end, not started). The end of a
+  // playlist is the end.
+  function following() {
+    if (list) {
+      const n = list.items[list.at + 1];
+      return n && { item: n, href: inList(n, list.id, true), auto: true, label: `Next in ${list.title}`, button: "Next in playlist" };
+    }
+    if (nextEp) return { item: nextEp, href: `#/item/${nextEp.id}?play=1`, auto: true, label: "Next episode", button: "Next episode" };
+    if (it.series) return null;
+    const n = similar.find((x) => !x.completed) || similar[0];
+    return n && { item: n, href: `#/item/${n.id}?play=1` };
+  }
+  const drawNext = () => { player.setUpNext(following()); drawHead(); };
 
   function drawHead() {
     const kind = it.kind !== "video" && it.kind !== "episode" && kindLabel(it.kind);
     const eyebrow = it.series
       ? h("a", { class: "eyebrow eyebrow-link", href: `#/series/${it.series.id}` },
         icon("stack"), `${it.series.title} · Season ${it.series.season} · Episode ${it.series.episode}`)
-      : [kind, it.year].filter(Boolean).join(" · ");
+      : list
+        ? h("a", { class: "eyebrow eyebrow-link", href: `#/playlist/${list.id}` },
+          icon("playlist"), `${list.title} · ${list.at + 1} of ${list.items.length}`)
+        : [kind, it.year].filter(Boolean).join(" · ");
+    const next = following();
     head.replaceChildren(...h("div", {},
       eyebrow && (typeof eyebrow === "string" ? h("div", { class: "eyebrow" }, eyebrow) : eyebrow),
       h("div", { class: "watch-title-row" },
@@ -860,33 +907,15 @@ async function renderItem(id, params, ctx) {
         it.language && h("span", {}, langName(it.language)),
         it.completed && h("span", { class: "pill" }, "Watched")),
       h("div", { class: "watch-actions" },
-        nextEp && h("a", { class: "btn btn-primary", href: `#/item/${nextEp.id}?play=1`, title: `${epLabel(nextEp.series)} · ${nextEp.title}` },
-          icon("skipNext"), "Next episode"),
+        next?.button && h("a", { class: "btn btn-primary", href: next.href, title: next.item.series ? `${epLabel(next.item.series)} · ${next.item.title}` : next.item.title },
+          icon("skipNext"), next.button),
         favoriteButton(it),
         ratingStars(it, update),
+        h("button", { class: "btn", onclick: () => playlistDialog([it.id], it.series ? `${it.series.title} · ${epLabel(it.series)} · ${it.title}` : it.title) },
+          icon("listAdd"), "Add to playlist"),
         h("button", { class: "btn", onclick: () => edit("title") }, icon(editIcon()), "Edit details"),
         h("button", { class: "btn", onclick: () => thumbnailDialog(it, player) }, icon("image"), "Thumbnail")),
     ).childNodes);
-  }
-
-  // For an episode: the other episodes of its season beside the player, and
-  // the next one for the "Next episode" button and the end of playback.
-  async function loadSeriesContext() {
-    nextEp = null;
-    episodes.replaceChildren();
-    if (it.series) {
-      try {
-        const s = await api(`/api/series/${it.series.id}`);
-        if (ctx.stale()) return;
-        const all = s.seasons.flatMap((x) => x.episodes);
-        const i = all.findIndex((x) => x.id === it.id);
-        nextEp = i >= 0 && i + 1 < all.length ? all[i + 1] : null;
-        const season = s.seasons.find((x) => x.number === it.series.season);
-        if (season) episodes.replaceChildren(sideList(`Season ${season.number}`, season.episodes, { current: it.id, numbered: true }));
-        if (nextEp) player.setUpNext(nextEp);
-      } catch { /* the page works without it */ }
-    }
-    drawHead();
   }
 
   function drawDesc() {
@@ -896,21 +925,89 @@ async function renderItem(id, params, ctx) {
         h("button", { class: "link-btn", onclick: () => edit("description") }, "Add one")));
   }
 
-  drawHead();
-  drawDesc();
-  watch.append(
-    h("div", { class: "watch-player" }, player.el, warn),
-    h("div", { class: "watch-main" }, head, desc, tags.el),
-    h("aside", { class: "watch-side" }, episodes, similar, detailsCard(it)));
-  app.replaceChildren(watch);
+  // For an episode: the other episodes of its season beside the player, and
+  // the next one.
+  async function loadSeries() {
+    const token = shown;
+    nextEp = null;
+    episodes.replaceChildren();
+    if (it.series) {
+      try {
+        const s = await api(`/api/series/${it.series.id}`);
+        if (!live(token)) return;
+        const all = s.seasons.flatMap((x) => x.episodes);
+        const i = all.findIndex((x) => x.id === it.id);
+        nextEp = i >= 0 && i + 1 < all.length ? all[i + 1] : null;
+        const season = s.seasons.find((x) => x.number === it.series.season);
+        if (season) episodes.replaceChildren(sideList(`Season ${season.number}`, season.episodes, { current: it.id, numbered: true }));
+      } catch { /* the page works without it */ }
+    }
+    if (live(token)) drawNext();
+  }
 
-  onAuthChange = drawHead;
-  loadSeriesContext();
-  api(`/api/items/${id}/similar`).then((items) => {
-    if (ctx.stale() || !items.length) return;
-    similar.replaceChildren(sideList("More like this", items));
-    if (!it.series) player.setUpNext(items.find((x) => !x.completed) || items[0]);
-  }).catch(() => {});
+  // Playing a playlist: its videos beside the player, this one marked.
+  async function loadList(id) {
+    const token = shown;
+    if (!id) { list = null; listSide.replaceChildren(); return; }
+    try {
+      const p = await api(`/api/playlists/${id}`);
+      if (!live(token)) return;
+      const at = p.items.findIndex((x) => x.id === it.id);
+      list = at >= 0 ? { id: p.id, title: p.title, items: p.items, at } : null;
+    } catch {
+      if (!live(token)) return;
+      list = null; // deleted, or this video was taken out: play it on its own
+    }
+    listSide.replaceChildren(list ? sideList(
+      h("h3", { class: "side-list-head" }, h("a", { href: `#/playlist/${list.id}` }, list.title), h("span", {}, `${list.at + 1} of ${list.items.length}`)),
+      list.items, { current: it.id, ordered: true, href: (x) => inList(x, list.id, true) }) : "");
+    drawNext();
+  }
+
+  function show(next, params, newCtx) {
+    save(); // where the video before was left
+    it = next;
+    ctx = newCtx;
+    const token = ++shown;
+    const listID = Number(params.get("list")) || 0;
+    if (list && list.id !== listID) { list = null; listSide.replaceChildren(); }
+    if (list) list.at = list.items.findIndex((x) => x.id === it.id); // until the fresh copy comes
+    if (list && list.at < 0) list = null;
+    nextEp = null;
+    similar = [];
+    episodes.replaceChildren();
+    similarSide.replaceChildren();
+
+    document.title = `${it.title} · ${APP_NAME}`;
+    player.load(it, { autoplay: params.get("play") === "1" });
+    player.setTitle(it.series ? `${it.series.title} · ${it.title}` : it.title);
+    tags = tagEditor(() => it, update);
+    tagsBox.replaceChildren(tags.el);
+    details.replaceChildren(detailsCard(it));
+    drawHead();
+    drawDesc();
+    if (!watch.isConnected) app.replaceChildren(watch);
+    keyHandler = player.handleKey;
+    onAuthChange = drawHead;
+    onLeave = leave;
+
+    loadList(listID);
+    loadSeries();
+    api(`/api/items/${it.id}/similar`).then((items) => {
+      if (!live(token) || !items.length) return;
+      similar = items;
+      similarSide.replaceChildren(sideList("More like this", items));
+      drawNext();
+    }).catch(() => {});
+  }
+
+  function leave() {
+    save();
+    player.destroy();
+    itemPage = null;
+  }
+
+  return { show };
 }
 
 // The edit buttons show a lock while editing needs the PIN.
@@ -1077,25 +1174,35 @@ function detailsCard(it) {
 }
 
 // sideList is a compact vertical list of videos for the side column.
-// numbered: a season's episodes ("3. Title"); current: the one playing.
-function sideList(title, items, { current, numbered } = {}) {
-  return h("section", { class: "side-list" },
-    h("h3", {}, title),
-    items.map((it) => {
-      const pct = progressOf(it);
-      const name = numbered ? `${it.series.episode}. ${it.title}` : titleOf(it);
-      const meta = numbered ? [fmtDuration(it.duration_ms), it.completed && "Watched"].filter(Boolean).join(" · ") : cardMeta(it);
-      return h("a", { class: `mini${it.id === current ? " current" : ""}`, href: hrefOf(it), title: name,
-        "aria-current": it.id === current ? "true" : null },
-        h("div", { class: "thumb" },
-          poster(it),
-          it.id === current && h("span", { class: "badge q" }, "Playing"),
-          it.duration_ms && h("span", { class: "badge dur" }, fmtDuration(it.duration_ms)),
-          pct && h("div", { class: "progress" }, h("i", { style: `width:${pct}%` }))),
-        h("div", {},
-          h("div", { class: "mini-title" }, name),
-          h("div", { class: "card-meta" }, meta || "\u00a0")));
-    }));
+// numbered: a season's episodes ("3. Title"); ordered: a playlist's videos,
+// numbered by place; current: the one playing; href: where each one links.
+// title is a string or a heading. A long list scrolls on its own, starting
+// at the current one.
+function sideList(title, items, { current, numbered, ordered, href = hrefOf } = {}) {
+  const rows = items.map((it, i) => {
+    const pct = progressOf(it);
+    const name = numbered ? `${it.series.episode}. ${it.title}` : ordered ? `${i + 1}. ${titleOf(it)}` : titleOf(it);
+    const meta = numbered ? [fmtDuration(it.duration_ms), it.completed && "Watched"].filter(Boolean).join(" · ") : cardMeta(it);
+    return h("a", { class: `mini${it.id === current ? " current" : ""}`, href: href(it), title: name,
+      "aria-current": it.id === current ? "true" : null },
+      h("div", { class: "thumb" },
+        poster(it),
+        it.id === current && h("span", { class: "badge q" }, "Playing"),
+        it.duration_ms && h("span", { class: "badge dur" }, fmtDuration(it.duration_ms)),
+        pct && h("div", { class: "progress" }, h("i", { style: `width:${pct}%` }))),
+      h("div", {},
+        h("div", { class: "mini-title" }, name),
+        h("div", { class: "card-meta" }, meta || "\u00a0")));
+  });
+  const long = ordered && items.length > 6;
+  const box = h("div", { class: long ? "side-scroll" : null }, rows);
+  if (long) {
+    requestAnimationFrame(() => {
+      const cur = box.querySelector(".mini.current");
+      if (cur) box.scrollTop = cur.offsetTop - 8; // the box is the rows' offset parent
+    });
+  }
+  return h("section", { class: "side-list" }, typeof title === "string" ? h("h3", {}, title) : title, box);
 }
 
 function srcBadge(it, field) {
@@ -1284,6 +1391,8 @@ async function renderSeries(id, params, ctx) {
           s.description && h("p", { class: "hero-desc" }, s.description),
           h("div", { class: "hero-actions" },
             play && h("a", { class: "btn btn-primary btn-lg", href: play }, icon("play"), `${s.next_verb} ${epLabel(s.next.series)}`),
+            h("button", { class: "btn btn-glass btn-lg", onclick: () => playlistDialog(s.seasons.flatMap((x) => x.episodes.map((ep) => ep.id)),
+              `All ${plural(s.show.episodes, "episode")} of ${s.title}`) }, icon("listAdd"), "Add to playlist"),
             h("button", { class: "btn btn-glass btn-lg", onclick: () => openSeriesEditor(s, saved) }, icon(editIcon()), "Edit series"))),
         h("a", { class: "hero-art", href: play || hrefOf(s), "aria-label": `Play ${s.title}`, tabindex: "-1" },
           h("div", { class: "thumb" },
@@ -1373,6 +1482,332 @@ async function openSeriesEditor(s, onSaved) {
   });
 }
 
+// ---------- playlists ----------
+
+// inList links to a video as part of a playlist, so the rest follows it.
+const inList = (it, listID, play) => `#/item/${it.id}?list=${listID}${play ? "&play=1" : ""}`;
+const playlistCover = (p) => cover(p.title, p.cover_id && `/api/items/${p.cover_id}/thumbnail`);
+
+function playlistMeta(p) {
+  return [plural(p.count, "video"), fmtDuration(p.duration_ms),
+    p.watched && (p.watched === p.count ? "All watched" : `${p.watched} watched`)].filter(Boolean);
+}
+
+function playlistCard(p) {
+  const pct = p.watched && p.watched < p.count ? (p.watched / p.count) * 100 : 0;
+  return h("a", { class: "card card-playlist", href: `#/playlist/${p.id}`, title: p.title },
+    h("div", { class: "thumb" },
+      playlistCover(p),
+      h("div", { class: "play-hint" }, h("span", {}, icon("play"))),
+      h("span", { class: "badge q" }, "Playlist"),
+      p.count > 0 && p.watched === p.count && h("span", { class: "badge done", title: "All watched" }, icon("check")),
+      h("span", { class: "badge dur" }, plural(p.count, "video")),
+      pct && h("div", { class: "progress" }, h("i", { style: `width:${pct}%` }))),
+    h("div", { class: "card-body" },
+      h("div", { class: "card-title" }, p.title),
+      h("div", { class: "card-meta" }, [fmtDuration(p.duration_ms), p.description].filter(Boolean).join(" · ") || "\u00a0")));
+}
+
+async function renderPlaylists(ctx) {
+  document.title = `Playlists · ${APP_NAME}`;
+  const lists = await api("/api/playlists");
+  if (ctx.stale()) return;
+  const newBtn = () => h("button", { class: "btn btn-primary", onclick: newPlaylist }, icon("plus"), "New playlist");
+  app.replaceChildren(...h("div", {},
+    h("div", { class: "page-head" },
+      h("div", {}, h("h1", {}, "Playlists"),
+        h("div", { class: "sub" }, lists.length ? plural(lists.length, "playlist") : "Videos in the order you choose, played one after another")),
+      lists.length > 0 && newBtn()),
+    lists.length
+      ? h("div", { class: "grid" }, lists.map(playlistCard))
+      : h("div", { class: "empty" }, art("playlist"), h("h2", {}, "No playlists yet"),
+        h("p", {}, "Put any videos in a playlist, in the order you like, and they play one after another. On a video or a series, choose Add to playlist, or start one here."),
+        h("div", { class: "actions" }, newBtn()))).childNodes);
+}
+
+async function newPlaylist() {
+  if (!(await ensureUnlocked())) return;
+  const title = await nameDialog({ title: "New playlist", placeholder: "Road trip, Friday night…", confirm: "Create" });
+  if (!title) return;
+  try {
+    const p = await api("/api/playlists", { method: "POST", body: { title } });
+    location.hash = `#/playlist/${p.id}`;
+  } catch (e) { toast(e.message, "error"); }
+}
+
+// nameDialog asks for a name, and resolves to it (or null).
+function nameDialog({ title, placeholder, confirm = "OK" }) {
+  return new Promise((resolve) => {
+    const input = h("input", { class: "input", placeholder, autocomplete: "off", "aria-label": "Name" });
+    const err = h("p", { class: "form-error", "aria-live": "polite" });
+    const d = h("dialog", { class: "confirm name-dialog" },
+      h("form", { onsubmit: (e) => {
+        e.preventDefault();
+        if (!input.value.trim()) { err.textContent = "Give it a name."; input.focus(); return; }
+        d.close("ok");
+      } },
+      h("h2", {}, title),
+      input, err,
+      h("div", { class: "dialog-actions" },
+        h("button", { class: "btn btn-ghost", type: "button", onclick: () => d.close("cancel") }, "Cancel"),
+        h("button", { class: "btn btn-primary", type: "submit" }, confirm))));
+    const under = overlayOpen;
+    d.addEventListener("close", () => { overlayOpen = under; resolve(d.returnValue === "ok" ? input.value.trim() : null); d.remove(); });
+    document.body.append(d);
+    overlayOpen = true;
+    d.showModal();
+    input.focus();
+  });
+}
+
+async function renderPlaylist(id, ctx) {
+  let p;
+  try {
+    p = await api(`/api/playlists/${id}`);
+  } catch (e) {
+    if (e.message !== "not found") throw e;
+    if (ctx.stale()) return;
+    app.replaceChildren(h("div", { class: "empty" }, art("playlist"), h("h2", {}, "This playlist isn't here anymore"),
+      h("p", {}, "It may have been deleted. The videos that were in it are still in the library."),
+      h("div", { class: "actions" }, h("a", { class: "btn btn-primary", href: "#/playlists" }, "All playlists"))));
+    return;
+  }
+  if (ctx.stale()) return;
+  document.title = `${p.title} · ${APP_NAME}`;
+
+  const head = h("div", {});
+  const list = h("section", { class: "shelf" });
+  const saved = (next, focus) => {
+    p = next;
+    document.title = `${p.title} · ${APP_NAME}`;
+    drawHead();
+    drawList(focus);
+  };
+
+  // Moves and removals show at once, and go to the server one after
+  // another, so it ends up with the last; only the answer to the latest is
+  // drawn. If one fails, the page goes back to what's saved.
+  let queue = Promise.resolve(), sent = 0;
+  const send = (path, method, body, focus) => {
+    const n = ++sent;
+    queue = queue
+      .then(() => api(path, { method, body }))
+      .catch((e) => { toast(e.message, "error"); return api(`/api/playlists/${p.id}`); })
+      .then((res) => { if (n === sent && !ctx.stale()) saved(res, focus); })
+      .catch(() => {});
+  };
+
+  function drawHead() {
+    const src = p.cover_id && `/api/items/${p.cover_id}/thumbnail`;
+    const play = p.next && inList(p.next, p.id, true);
+    const first = p.items[0];
+    const restart = p.next && first && p.next.id !== first.id && inList(first, p.id, true);
+    head.replaceChildren(h("section", { class: "hero series-hero" },
+      h("div", { class: "hero-bg", style: src ? `background-image:url(${src})` : null }),
+      h("div", { class: "hero-inner" },
+        h("div", {},
+          h("div", { class: "eyebrow" }, icon("playlist"), "Playlist"),
+          h("h1", {}, p.title),
+          h("div", { class: "hero-meta" }, playlistMeta(p).map((m) => h("span", {}, m))),
+          p.description && h("p", { class: "hero-desc" }, p.description),
+          h("div", { class: "hero-actions" },
+            play && h("a", { class: "btn btn-primary btn-lg", href: play }, icon("play"), p.next_verb),
+            restart && h("a", { class: "btn btn-glass btn-lg", href: restart }, icon("replay"), "From the start"),
+            h("button", { class: "btn btn-glass btn-lg", onclick: () => openPlaylistEditor(p, saved) }, icon(editIcon()), "Edit playlist"))),
+        h("a", { class: "hero-art", href: play || "#/library", "aria-label": play ? `Play ${p.title}` : "Browse the library", tabindex: "-1" },
+          h("div", { class: "thumb" },
+            playlistCover(p),
+            play && h("div", { class: "play-hint" }, h("span", {}, icon("play"))))))));
+  }
+
+  function row(it, i) {
+    const pct = progressOf(it);
+    const isNext = p.next && it.id === p.next.id;
+    const href = inList(it, p.id);
+    const tool = (dir, label, name, onclick, disabled) => h("button", {
+      class: "btn btn-ghost btn-icon btn-sm", type: "button", "data-dir": dir, title: label,
+      "aria-label": `${label}: ${titleOf(it)}`, disabled, onclick,
+    }, icon(name));
+    return h("div", { class: `ep-row pl-row${isNext ? " next" : ""}`, "data-item": it.id },
+      h("div", { class: "ep-num" }, i + 1),
+      h("a", { class: "thumb", href, tabindex: "-1", "aria-hidden": "true" },
+        poster(it),
+        h("div", { class: "play-hint" }, h("span", {}, icon("play"))),
+        it.completed && !pct && h("span", { class: "badge done", title: "Watched" }, icon("check")),
+        it.duration_ms && h("span", { class: "badge dur" }, fmtDuration(it.duration_ms)),
+        pct && h("div", { class: "progress" }, h("i", { style: `width:${pct}%` }))),
+      h("a", { class: "ep-body", href },
+        h("div", { class: "ep-title" }, titleOf(it)),
+        h("div", { class: "card-meta" }, [cardMeta(it),
+          it.completed ? "Watched" : it.position_ms > 0 && it.duration_ms && `${fmtDuration(it.duration_ms - it.position_ms)} left`,
+        ].filter(Boolean).join(" · "))),
+      h("div", { class: "pl-tools" },
+        isNext && h("span", { class: "pill accent ep-next" }, p.next_verb === "Resume" ? "In progress" : "Up next"),
+        tool("up", "Move up", "arrowUp", () => move(i, -1), i === 0),
+        tool("down", "Move down", "arrowDown", () => move(i, 1), i === p.items.length - 1),
+        tool("out", "Take out", "x", () => remove(it))));
+  }
+
+  // focus: {id, dir} puts the keyboard back on that video's arrow after a
+  // move, if it was in the list.
+  function drawList(focus) {
+    const hadFocus = list.contains(document.activeElement);
+    if (!p.items.length) {
+      list.replaceChildren(h("div", { class: "empty compact" },
+        h("p", {}, "Nothing in here yet. On a video or a series, choose Add to playlist."),
+        h("div", { class: "actions" }, h("a", { class: "btn", href: "#/library" }, icon("grid"), "Browse the library"))));
+      return;
+    }
+    list.replaceChildren(...h("div", {},
+      h("div", { class: "shelf-head" }, h("h2", {}, "In this playlist")),
+      h("div", { class: "episode-list" }, p.items.map(row))).childNodes);
+    if (focus && hadFocus) {
+      const el = list.querySelector(`[data-item="${focus.id}"]`);
+      (el?.querySelector(`[data-dir="${focus.dir}"]:not(:disabled)`) || el?.querySelector("[data-dir]:not(:disabled)"))?.focus();
+    }
+  }
+
+  async function move(i, d) {
+    if (!(await ensureUnlocked())) return;
+    const items = [...p.items];
+    const [it] = items.splice(i, 1);
+    items.splice(i + d, 0, it);
+    const focus = { id: it.id, dir: d < 0 ? "up" : "down" };
+    p = { ...p, items };
+    drawList(focus);
+    send(`/api/playlists/${p.id}`, "PATCH", { order: items.map((x) => x.id) }, focus);
+  }
+
+  async function remove(it) {
+    if (!(await ensureUnlocked())) return;
+    p = { ...p, items: p.items.filter((x) => x.id !== it.id) };
+    drawList();
+    send(`/api/playlists/${p.id}/items`, "DELETE", { items: [it.id] });
+    toast(`Taken out of ${p.title}`);
+  }
+
+  drawHead();
+  drawList();
+  onAuthChange = drawHead;
+  app.replaceChildren(h("div", { class: "series-page" }, head, list));
+}
+
+async function openPlaylistEditor(p, onSaved) {
+  if (!(await ensureUnlocked())) return;
+  const title = h("input", { class: "input", value: p.title });
+  const description = h("textarea", { class: "input", value: p.description ?? "", placeholder: "What's it for?", rows: 5 });
+  let drawer = null;
+  const del = h("button", { class: "btn btn-danger", type: "button", onclick: async () => {
+    const ok = await confirmDialog({
+      title: `Delete “${p.title}”?`,
+      body: "Only the playlist goes. Its videos stay in the library, with their details and where you left off.",
+      confirm: "Delete playlist", danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api(`/api/playlists/${p.id}`, { method: "DELETE" });
+      drawer.close();
+      toast(`Deleted “${p.title}”`);
+      location.hash = "#/playlists";
+    } catch (e) { toast(e.message, "error"); }
+  } }, icon("trash"), "Delete playlist");
+  drawer = openDrawer({
+    title: "Edit playlist",
+    focus: title,
+    body: h("div", { class: "drawer-fields" },
+      labeled("Name", title),
+      labeled("Description", description),
+      h("div", { class: "drawer-section" }, h("div", { class: "section-label" }, "Delete"), del)),
+    onSave: async (error) => {
+      const body = {};
+      if (title.value.trim() !== p.title) body.title = title.value.trim();
+      if (description.value !== (p.description ?? "")) body.description = description.value;
+      if (!Object.keys(body).length) return;
+      if (body.title === "") {
+        error.textContent = "The playlist needs a name.";
+        return false;
+      }
+      onSaved(await api(`/api/playlists/${p.id}`, { method: "PATCH", body }));
+      toast("Playlist saved");
+    },
+  });
+}
+
+// playlistDialog puts videos in playlists or takes them out: ids is one
+// video, or a series' episodes; what says which. Each playlist shows
+// whether it has them all, some or none. Choosing one adds the missing
+// ones, or takes them all out if it had them all.
+async function playlistDialog(ids, what) {
+  if (!(await ensureUnlocked())) return;
+  let playlists = null;
+  const rows = h("div", { class: "picker-list pl-list", tabindex: "-1" }, h("p", { class: "hint picker-empty" }, "Loading…"));
+  const name = h("input", { class: "input", placeholder: "New playlist", "aria-label": "Name of a new playlist", autocomplete: "off" });
+  const create = h("button", { class: "btn", type: "submit" }, icon("plus"), "Create");
+  const err = h("p", { class: "form-error", "aria-live": "polite" });
+
+  const row = (p) => {
+    const all = p.contains >= ids.length, some = p.contains > 0 && !all;
+    return h("button", { class: "pl-pick", type: "button", "data-id": p.id, "aria-pressed": all ? "true" : some ? "mixed" : "false",
+      onclick: (e) => toggle(p, all, e.currentTarget) },
+      h("span", { class: `check${all || some ? " on" : ""}` }, all ? icon("check") : some && icon("minus")),
+      h("span", { class: "pl-name" }, p.title),
+      h("span", { class: "n" }, plural(p.count, "video")));
+  };
+  const draw = () => rows.replaceChildren(...(playlists.length ? playlists.map(row)
+    : [h("p", { class: "hint picker-empty" }, "No playlists yet. Name one below to start it.")]));
+  const toggle = async (p, had, btn) => {
+    btn.classList.add("busy");
+    err.textContent = "";
+    try {
+      const res = await api(`/api/playlists/${p.id}/items`, { method: had ? "DELETE" : "POST", body: { items: ids } });
+      Object.assign(p, { count: res.count, contains: had ? 0 : ids.length });
+      draw();
+      rows.querySelector(`[data-id="${p.id}"]`)?.focus();
+      toast(had ? `Taken out of ${p.title}` : `Added to ${p.title}`);
+    } catch (e) {
+      err.textContent = e.message;
+      btn.classList.remove("busy");
+    }
+  };
+
+  const d = h("dialog", { class: "confirm picker pl-dialog" },
+    h("h2", {}, "Add to playlist"),
+    h("p", { class: "pl-what" }, what),
+    rows,
+    h("form", { class: "pl-new", onsubmit: async (e) => {
+      e.preventDefault();
+      const title = name.value.trim();
+      if (!title) { err.textContent = "Give the new playlist a name."; name.focus(); return; }
+      create.classList.add("busy");
+      err.textContent = "";
+      try {
+        const p = await api("/api/playlists", { method: "POST", body: { title, items: ids } });
+        (playlists ||= []).unshift({ ...p, contains: ids.length });
+        name.value = "";
+        draw();
+        toast(`Added to ${p.title}`);
+      } catch (x) {
+        err.textContent = x.message;
+      } finally {
+        create.classList.remove("busy");
+      }
+    } }, name, create),
+    err,
+    h("div", { class: "dialog-actions" }, h("button", { class: "btn btn-primary", type: "button", onclick: () => d.close() }, "Done")));
+  const under = overlayOpen;
+  d.addEventListener("close", () => { overlayOpen = under; d.remove(); });
+  document.body.append(d);
+  overlayOpen = true;
+  d.showModal();
+  rows.focus(); // not the name field: that would open the keyboard on phones
+  try {
+    playlists = await api(`/api/playlists?items=${ids.join(",")}`);
+    if (d.open) draw();
+  } catch (e) {
+    err.textContent = e.message;
+  }
+}
+
 // ---------- player ----------
 
 // createPlayer picks how to play an item:
@@ -1385,18 +1820,24 @@ async function openSeriesEditor(s, onSaved) {
 // If direct play fails it falls back to HLS; if copying fails, to transcoding.
 // Both modes share one set of controls.
 //
-// opts: autoplay, wide (current layout), onWide (toggle the wide layout).
+// One player plays one video after another: load() switches to the next in
+// the same <video>, so full screen stays on, and phones (which only let a
+// player start by itself once it has been played) let the next one start.
+//
+// opts: wide (current layout), onWide (toggle the wide layout).
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 let playbackSpeed = 1; // kept while the app is open, like most video sites
+const UP_NEXT_SECONDS = 8;
 
-function createPlayer(it, warn, opts = {}) {
-  const video = h("video", { preload: "metadata", playsinline: true, "webkit-playsinline": true, poster: `/api/items/${it.id}/thumbnail` });
+function createPlayer(warn, opts = {}) {
+  const video = h("video", { preload: "metadata", playsinline: true, "webkit-playsinline": true });
   const el = h("div", { class: "player paused" }, video);
-  const startAt = it.position_ms > 0 ? it.position_ms / 1000 : 0;
-  let mode = it.playback_mode && it.playback_mode !== "direct" ? "hls" : "direct";
-  let transcode = !canDecode(it.video_codec);
+  let it = null, startAt = 0, mode = "direct", transcode = false;
   let hlsPlayer = null, offset = 0, session = null, destroyed = false;
-  let hlsStarted = false, pending = startAt, upNext = null, upNextEl = null;
+  let hlsStarted = false, pending = 0, upNext = null, upNextEl = null, countdown = null;
+  // Each load() starts a new generation; streams still starting for an
+  // earlier video see that and stop.
+  let generation = 0, sourceEvents = new AbortController();
 
   const showWarn = (msg) => { warn.hidden = false; warn.textContent = msg; };
   const setBusy = (b) => el.classList.toggle("busy", b);
@@ -1409,15 +1850,16 @@ function createPlayer(it, warn, opts = {}) {
   // ---- direct ----
   function startDirect() {
     video.src = `/stream/${it.id}`;
+    const signal = sourceEvents.signal;
     video.addEventListener("loadedmetadata", () => {
       if (mode === "direct" && startAt && startAt < video.duration - 5) video.currentTime = startAt;
-    }, { once: true });
+    }, { once: true, signal });
     video.addEventListener("error", () => {
       if (mode !== "direct" || destroyed) return;
       mode = "hls";
       pending = video.currentTime || startAt;
       if (el.classList.contains("started")) startHLS(pending);
-    }, { once: true });
+    }, { once: true, signal });
   }
 
   // ---- HLS ----
@@ -1427,28 +1869,33 @@ function createPlayer(it, warn, opts = {}) {
   };
 
   async function startHLS(at) {
+    const gen = generation;
     hlsStarted = true;
     video.removeAttribute("src");
     session ||= Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const sess = session;
     setBusy(true);
     try {
-      const r = await api(`/api/items/${it.id}/hls`, { method: "POST", body: { session, start: at, transcode } });
-      if (destroyed) return;
+      const r = await api(`/api/items/${it.id}/hls`, { method: "POST", body: { session: sess, start: at, transcode } });
+      if (destroyed || gen !== generation) { endSession(sess); return; } // its video was left while it started
       offset = r.start;
       badge.hidden = !r.encoder;
       badge.title = r.encoder ? `This browser can't play the original format, so the server converts it to H.264 as you watch (${r.encoder}).` : "";
-      await loadSource(r.url);
-      video.play().catch(() => {}); // autoplay may be blocked; the play button still works
+      await loadSource(r.url, gen);
+      if (gen === generation) video.play().catch(() => {}); // autoplay may be blocked; the play button still works
     } catch (e) {
-      showWarn(`This video couldn't be prepared for streaming: ${e.message}`);
+      if (gen === generation) showWarn(`This video couldn't be prepared for streaming: ${e.message}`);
     } finally {
-      setBusy(false);
+      if (gen === generation) setBusy(false);
     }
   }
 
-  async function loadSource(url) {
+  const endSession = (id) => fetch(`/api/hls/${id}`, { method: "DELETE", keepalive: true }).catch(() => {});
+
+  async function loadSource(url, gen) {
     if (hlsPlayer) { hlsPlayer.destroy(); hlsPlayer = null; }
     const Hls = await loadHlsJs();
+    if (gen !== generation || destroyed) return;
     if (Hls && Hls.isSupported()) {
       hlsPlayer = new Hls({ startPosition: 0, maxBufferLength: 60 });
       hlsPlayer.on(Hls.Events.ERROR, (_, data) => {
@@ -1576,7 +2023,7 @@ function createPlayer(it, warn, opts = {}) {
   const track = h("div", { class: "pc-track", role: "slider", tabindex: 0, "aria-label": "Seek", "aria-valuemin": 0 }, rail, knob, tip);
 
   const osdEl = h("div", { class: "pc-osd", "aria-hidden": "true" });
-  const titleEl = h("div", { class: "pc-title" }, it.title);
+  const titleEl = h("div", { class: "pc-title" });
   el.append(
     h("div", { class: "pc-top" }, titleEl),
     osdEl, bigPlay,
@@ -1700,6 +2147,7 @@ function createPlayer(it, warn, opts = {}) {
 
   for (const ev of ["timeupdate", "progress", "durationchange", "loadedmetadata", "seeked"]) video.addEventListener(ev, render);
   video.addEventListener("play", () => {
+    hideUpNext();
     el.classList.add("started");
     el.classList.remove("paused");
     setBtn(playBtn, "pause", "Pause (k)");
@@ -1725,6 +2173,7 @@ function createPlayer(it, warn, opts = {}) {
   });
   drawVolume();
   video.addEventListener("ended", () => { if (upNext) showUpNext(); });
+  video.addEventListener("seeking", hideUpNext); // going back for another look
 
   const onFullscreen = () => {
     const fs = (document.fullscreenElement || document.webkitFullscreenElement) === el;
@@ -1733,22 +2182,86 @@ function createPlayer(it, warn, opts = {}) {
   document.addEventListener("fullscreenchange", onFullscreen);
   document.addEventListener("webkitfullscreenchange", onFullscreen);
 
+  // At the end, offer what's next: {item, href, label, auto}. With auto
+  // (the next episode, the next in a playlist) it starts by itself after a
+  // countdown, unless cancelled.
   function showUpNext() {
     hideUpNext();
     const n = upNext;
+    const again = h("button", { class: "btn btn-glass", onclick: () => { seek(0); play(); } }, icon("replay"), "Watch again");
+    const when = h("p", { class: "up-next-when" });
+    const timer = n.auto && h("i", { class: "up-next-timer", style: `--t:${UP_NEXT_SECONDS}s` });
+    const cancel = n.auto && h("button", { class: "btn btn-glass", onclick: () => {
+      clearTimeout(countdown);
+      when.remove();
+      timer.remove();
+      cancel.replaceWith(again);
+    } }, icon("x"), "Cancel");
     upNextEl = h("div", { class: "up-next", onclick: (e) => e.stopPropagation() },
       h("button", { class: "pc-btn up-next-close", "aria-label": "Close", onclick: hideUpNext }, icon("x")),
       h("div", { class: "up-next-card" },
-        h("div", { class: "thumb" }, poster(n)),
+        h("a", { class: "thumb", href: n.href, tabindex: "-1", "aria-hidden": "true" }, poster(n.item), timer),
         h("div", {},
-          h("div", { class: "eyebrow" }, "Up next"),
-          h("h3", {}, n.title),
+          h("div", { class: "eyebrow" }, n.label || "Up next"),
+          h("h3", {}, n.item.title),
+          n.auto && when,
           h("div", { class: "up-next-actions" },
-            h("a", { class: "btn btn-primary", href: `#/item/${n.id}?play=1` }, icon("play"), "Play"),
-            h("button", { class: "btn btn-glass", onclick: () => { seek(0); play(); } }, icon("replay"), "Watch again")))));
+            h("a", { class: "btn btn-primary", href: n.href }, icon("play"), n.auto ? "Play now" : "Play"),
+            cancel || again))));
     el.append(upNextEl);
+    if (!n.auto) return;
+    let left = UP_NEXT_SECONDS;
+    const tick = () => {
+      // Moving on closes drawers and dialogs, so wait while one is open.
+      timer.style.animationPlayState = overlayOpen ? "paused" : "";
+      if (overlayOpen) { countdown = setTimeout(tick, 1000); return; }
+      if (left <= 0) { location.hash = n.href; return; }
+      when.textContent = `Starts in ${left} s`;
+      left--;
+      countdown = setTimeout(tick, 1000);
+    };
+    tick();
   }
-  function hideUpNext() { if (upNextEl) { upNextEl.remove(); upNextEl = null; } }
+  function hideUpNext() {
+    clearTimeout(countdown);
+    countdown = null;
+    if (upNextEl) { upNextEl.remove(); upNextEl = null; }
+  }
+
+  // load switches to another video, ready to play (or playing, with
+  // autoplay), keeping the controls, volume, speed and full screen.
+  function load(item, { autoplay = false } = {}) {
+    const first = !it;
+    generation++;
+    hideUpNext();
+    sourceEvents.abort();
+    sourceEvents = new AbortController();
+    if (hlsPlayer) { hlsPlayer.destroy(); hlsPlayer = null; }
+    if (session) { endSession(session); session = null; }
+    if (!first) { video.removeAttribute("src"); video.load(); }
+
+    it = item;
+    startAt = it.position_ms > 0 ? it.position_ms / 1000 : 0;
+    mode = it.playback_mode && it.playback_mode !== "direct" ? "hls" : "direct";
+    transcode = !canDecode(it.video_codec);
+    offset = 0;
+    hlsStarted = false;
+    pending = startAt;
+    upNext = null;
+    restarts = 0;
+    mediaRecovered = false;
+    warn.hidden = true;
+    badge.hidden = true;
+    titleEl.textContent = it.title;
+    video.poster = `/api/items/${it.id}/thumbnail`;
+    el.classList.remove("started");
+    el.classList.add("paused");
+    setBusy(false);
+    setBtn(playBtn, "play", "Play (k)");
+    render();
+    if (mode === "direct") startDirect();
+    if (autoplay) play();
+  }
 
   // Keyboard shortcuts, as on most video sites. Returns true if handled.
   function handleKey(e) {
@@ -1778,18 +2291,16 @@ function createPlayer(it, warn, opts = {}) {
     return true;
   }
 
-  render();
-  if (mode === "direct") startDirect();
-  if (opts.autoplay) play();
-
   return {
-    el, video, position, handleKey,
+    el, video, position, handleKey, load,
     started: () => el.classList.contains("started"),
-    setUpNext: (item) => { upNext = item; },
+    setUpNext: (next) => { upNext = next; },
     setTitle: (t) => { titleEl.textContent = t; },
     setWide: (w) => { if (wideBtn) setBtn(wideBtn, w ? "narrow" : "wide", w ? "Default view (t)" : "Wide view (t)"); },
     destroy() {
       destroyed = true;
+      hideUpNext();
+      sourceEvents.abort();
       clearTimeout(idleTimer);
       clearTimeout(osdTimer);
       document.removeEventListener("fullscreenchange", onFullscreen);
@@ -1798,7 +2309,7 @@ function createPlayer(it, warn, opts = {}) {
       if (hlsPlayer) hlsPlayer.destroy();
       video.removeAttribute("src");
       video.load();
-      if (session) fetch(`/api/hls/${session}`, { method: "DELETE", keepalive: true });
+      if (session) endSession(session);
     },
   };
 }
@@ -2203,7 +2714,8 @@ const scrollMemo = new Map();
 const visited = [];
 
 function setNav(path) {
-  const page = path.startsWith("/library") ? "library" : path.startsWith("/settings") ? "settings" : path === "/" || path === "" ? "home" : "";
+  const page = path.startsWith("/library") ? "library" : path.startsWith("/playlist") ? "playlists"
+    : path.startsWith("/settings") ? "settings" : path === "/" || path === "" ? "home" : "";
   for (const a of document.querySelectorAll("[data-nav]")) {
     if (a.dataset.nav === page) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -2217,20 +2729,25 @@ function errorState(e) {
       h("a", { class: "btn", href: "#/" }, "Go home")));
 }
 
+// leavePage cleans up after the page on screen.
+function leavePage() {
+  if (onLeave) { onLeave(); onLeave = null; }
+}
+
 async function route() {
   if (closeOverlay) closeOverlay();
-  if (onLeave) { onLeave(); onLeave = null; }
-  if (currentHash) scrollMemo.set(currentHash, { y: window.scrollY, ...(pageMemo ? pageMemo() : {}) });
-  keyHandler = null;
-  pageMemo = null;
-  library = null;
-  onAuthChange = null;
-
   let hash = location.hash || "#/";
   if (hash.startsWith("#/?")) { // old library links
     history.replaceState(null, "", "#/library" + hash.slice(2));
     hash = location.hash;
   }
+  // From one video to another, the item page stays (with its player).
+  if (!(itemPage && /^#\/item\/\d+/.test(hash))) leavePage();
+  if (currentHash) scrollMemo.set(currentHash, { y: window.scrollY, ...(pageMemo ? pageMemo() : {}) });
+  keyHandler = null;
+  pageMemo = null;
+  library = null;
+  onAuthChange = null;
   // Going back to the page before: restore where you were on it.
   const back = visited.length > 1 && visited[visited.length - 2] === hash;
   if (back) visited.pop();
@@ -2255,13 +2772,19 @@ async function route() {
   try {
     const m = path.match(/^\/item\/(\d+)/);
     const sm = path.match(/^\/series\/(\d+)/);
+    const pm = path.match(/^\/playlist\/(\d+)/);
     if (m) await renderItem(m[1], params, ctx);
     else if (sm) await renderSeries(sm[1], params, ctx);
+    else if (pm) await renderPlaylist(pm[1], ctx);
+    else if (path.startsWith("/playlists")) await renderPlaylists(ctx);
     else if (path.startsWith("/library")) await renderLibrary(params, ctx);
     else if (path.startsWith("/settings")) await renderSettings(ctx);
     else await renderHome(ctx);
   } catch (e) {
-    if (!ctx.stale()) app.replaceChildren(errorState(e));
+    if (!ctx.stale()) {
+      leavePage(); // a player kept from the video before
+      app.replaceChildren(errorState(e));
+    }
   } finally {
     clearTimeout(placeholder);
     if (!ctx.stale()) {

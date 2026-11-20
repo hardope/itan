@@ -175,14 +175,29 @@ into separate videos.
 A series shows as one card in the library. Its page lists the episodes by
 season with what you've watched, and *Play* picks up where you are: the
 episode in progress, or the one after the last one you finished. Episode
-pages link back to the series and have a *Next episode* button.
+pages link back to the series and have a *Next episode* button, and when an
+episode ends the next one starts after a short countdown.
 Recommendations suggest a series by its next episode only.
+
+## Playlists
+
+A playlist is any videos, in the order you choose, played one after
+another: films for a movie night, music videos, episodes from different
+shows. *Add to playlist* on a video's page puts it in one, or starts a new
+one; on a series' page it adds every episode. A playlist's page plays it,
+moves videos up and down, and takes them out.
+
+When a video in a playlist ends, the next one starts after an 8-second
+countdown, in full screen if you were watching that way. *Cancel* stops it,
+and it waits while a form or menu is open. *Play* picks up where you are, as
+for a series. Videos on a drive that isn't plugged in stay in the playlist
+and are skipped until it's back.
 
 ## Edit PIN
 
 Anyone on your network can watch, but you can keep them from changing
 things. Set a PIN in Settings, and editing titles, tags, ratings, series,
-folders and backups asks for it once per device. Favorites and resume
+playlists, folders and backups asks for it once per device. Favorites and resume
 points stay free. The lock button in the header shows whether this device
 can make changes, and locks it again.
 
@@ -193,8 +208,10 @@ on the computer it runs on.
 ## Watching
 
 Press play on any video. Nothing is converted until you do, so browsing
-never ties up the server. The player remembers where you stopped, works the
-same for every file type, and offers what to watch next when a video ends.
+never ties up the server. The player remembers where you stopped and works
+the same for every file type. When a video ends, the next episode or the next
+in a playlist starts after a countdown; after anything else, it offers
+something like it.
 Editing details, tags, your rating or favorites happens in place, without
 interrupting playback.
 
@@ -296,8 +313,8 @@ the app apply immediately). Watch history is read fresh on every request. On a
 ## Backup, restore and moving between devices
 
 Everything you create (titles, descriptions, ratings, genres and tags,
-removed tags, collections and watch history) can leave the server in two
-ways. Both are described in [docs/export-format.md](docs/export-format.md).
+removed tags, series, playlists and watch history) can leave the server in
+two ways. Both are described in [docs/export-format.md](docs/export-format.md).
 
 - **Export file**: ⚙ → *Backup & restore* → *Download export*. One JSON file
   for the whole library (add `gzip=1` to the API call for a `.json.gz`). Import
@@ -320,7 +337,8 @@ ways. Both are described in [docs/export-format.md](docs/export-format.md).
   name there or some videos were renamed or re-encoded. Edits made on either
   computer are merged the next time the other one scans. The file covers the
   whole folder, including libraries inside it, so one file per drive is
-  enough. Watch history isn't included. This needs write access to the folder, so it won't work with a
+  enough. Watch history and playlists aren't included (a playlist often
+  mixes videos from several drives). This needs write access to the folder, so it won't work with a
   read-only (`:ro`) Docker mount. Older versions wrote one `.meta.json` per
   video; those are folded into `.itan.json` and removed when you turn the
   option on.
@@ -336,6 +354,11 @@ ways. Both are described in [docs/export-format.md](docs/export-format.md).
 | `PATCH /api/items/{id}` | Edit fields, `add_tags`, `remove_tags`, `series` (`{"title", "season", "episode"}` or `null`) |
 | `GET /api/series`, `GET /api/series/{id}` | Series names; one series with its seasons, episodes and what to play next |
 | `PATCH/DELETE /api/series/{id}` | Rename or describe a series; split it into separate videos |
+| `GET /api/playlists?items=` | Playlists, most recently changed first. With `items=1,2`, `contains` says how many of those videos each one has |
+| `POST /api/playlists` | New playlist: `{"title", "description", "items": [ids]}` |
+| `GET /api/playlists/{id}` | One playlist with its videos in order and what to play next |
+| `PATCH/DELETE /api/playlists/{id}` | Rename, describe or reorder (`{"order": [ids]}`) a playlist; delete it |
+| `POST/DELETE /api/playlists/{id}/items` | Add videos at the end, or take them out: `{"items": [ids]}` |
 | `GET /api/auth`, `POST /api/auth/unlock`, `POST /api/auth/lock` | Edit PIN state; unlock (`{"pin"}`) or lock this device |
 | `PUT/DELETE /api/auth/pin` | Set or change (`{"current", "pin"}`), or remove (`{"current"}`) the edit PIN |
 | `POST /api/items/{id}/progress` | Save resume position |
@@ -354,7 +377,7 @@ ways. Both are described in [docs/export-format.md](docs/export-format.md).
 | `GET /stream/{id}` | The video file (direct play) |
 
 With an edit PIN set, the requests that change things (`PATCH`/`POST`/`DELETE`
-on items, series, libraries and import) and `GET /api/export` need an
+on items, series, playlists, libraries and import) and `GET /api/export` need an
 unlocked device; otherwise they answer `401 {"locked": true}`.
 
 | | |

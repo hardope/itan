@@ -164,7 +164,8 @@ func buildFolderFile(ctx context.Context, q db.Execer, fl folderLib) (*Library, 
 }
 
 // collectionsFor keeps the collections that contain one of the items (with
-// only those items), plus their parents.
+// only those items), plus their parents. Playlists stay out: see
+// folderCollection.
 func collectionsFor(all []Collection, items map[string]bool) []Collection {
 	byUID := map[string]Collection{}
 	for _, c := range all {
@@ -172,6 +173,9 @@ func collectionsFor(all []Collection, items map[string]bool) []Collection {
 	}
 	keep := map[string]bool{}
 	for _, c := range all {
+		if !folderCollection(c) {
+			continue
+		}
 		for _, ci := range c.Items {
 			if items[ci.Hash] {
 				for uid := &c.UID; uid != nil && !keep[*uid]; uid = byUID[*uid].Parent {
@@ -197,6 +201,13 @@ func collectionsFor(all []Collection, items map[string]bool) []Collection {
 	}
 	return out
 }
+
+// folderCollection reports whether a collection belongs in folder files.
+// Playlists don't: they're often of videos on several drives, and folder
+// files merge collections by adding what's missing, so a video taken out
+// of a playlist on one computer would come back from the other's file.
+// Exports carry them instead.
+func folderCollection(c Collection) bool { return c.Kind != "playlist" }
 
 // WriteFolderFile brings the folder file up to date after edits here: it
 // first takes in anything another install changed in the file since this
